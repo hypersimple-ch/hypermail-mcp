@@ -13,7 +13,11 @@ import type {
   ListEmailsResult,
   SearchEmailsOptions,
 } from "../types.js";
-import { OUTLOOK_IMMUTABLE_ID_PREFER, resolveOutlookWebLink } from "./web-links.js";
+import {
+  OUTLOOK_IMMUTABLE_ID_PREFER,
+  resolveOutlookWebLink,
+  resolveOutlookWebLinks,
+} from "./web-links.js";
 
 export { OUTLOOK_IMMUTABLE_ID_PREFER } from "./web-links.js";
 
@@ -336,8 +340,16 @@ export async function listEmails(
     res = await listMessagePage(client, resolvedFolderId, limit, opts.skip ?? 0, filterParts);
   }
 
+  const webLinks = await resolveOutlookWebLinks(client, res.value.map((message) => ({
+    id: message.id,
+    graphWebLink: message.webLink,
+  })));
+
   return {
-    items: res.value.map((m) => mapSummary(m, folder)),
+    items: res.value.map((message) => ({
+      ...mapSummary(message, folder),
+      ...webLinks.get(message.id),
+    })),
     hasMore: !!res["@odata.nextLink"],
   };
 }
@@ -374,13 +386,26 @@ export async function searchEmails(
     .select(MESSAGE_SELECT)
     .get()) as { value: GraphMessage[] };
 
-  const summaries = res.value.map((m) => mapSummary(m));
-  return Promise.all(
-    summaries.map(async (summary) => {
-      const readableId = await probeSearchResult(client, summary.id);
-      return readableId ? { ...summary, id: readableId } : { ...summary, stale: true };
-    }),
+  const probed = await Promise.all(
+    res.value.map(async (message) => ({
+      message,
+      readableId: await probeSearchResult(client, message.id),
+    })),
   );
+  const webLinks = await resolveOutlookWebLinks(client, probed.map(({ message, readableId }) => ({
+    id: readableId ?? message.id,
+    graphWebLink: message.webLink,
+  })));
+
+  return probed.map(({ message, readableId }) => {
+    const resolvedId = readableId ?? message.id;
+    const summary = {
+      ...mapSummary(message),
+      id: resolvedId,
+      ...webLinks.get(resolvedId),
+    };
+    return readableId ? summary : { ...summary, stale: true };
+  });
 }
 
 export async function readEmail(
@@ -407,7 +432,12 @@ export async function readEmail(
 
   const summary = {
     ...mapSummary(m),
-    ...(await resolveOutlookWebLink(client, m.id, m.webLink)),
+    ...(await resolveOutlookWebLink(
+      client,
+      m.id,
+      m.webLink,
+      useImmutableIds ? "restImmutableEntryId" : "restId",
+    )),
   };
   const body = m.body;
   return {
@@ -451,8 +481,13 @@ export async function readAttachment(
 
   let webLinkFields;
   try {
-    const { message } = await getMessage(client, messageId);
-    webLinkFields = await resolveOutlookWebLink(client, message.id, message.webLink);
+    const { message, useImmutableIds: messageUsesImmutableIds } = await getMessage(client, messageId);
+    webLinkFields = await resolveOutlookWebLink(
+      client,
+      message.id,
+      message.webLink,
+      messageUsesImmutableIds ? "restImmutableEntryId" : "restId",
+    );
   } catch {
     webLinkFields = {
       webUrlUnavailableReason: "Unable to resolve the parent message's Outlook web link.",

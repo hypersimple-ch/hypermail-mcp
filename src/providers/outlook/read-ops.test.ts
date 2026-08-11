@@ -166,19 +166,38 @@ describe("Outlook read operations", () => {
   it("requests immutable IDs when listing emails", async () => {
     const { client, calls } = fakeClient({
       "/me/mailFolders/inbox/messages": [
-        { result: { value: [message("immutable-1")], "@odata.nextLink": undefined } },
+        {
+          result: {
+            value: [{
+              ...message("immutable-1"),
+              webLink: "https://outlook.office365.com/owa/?ItemID=immutable-1&exvsurl=1",
+            }],
+            "@odata.nextLink": undefined,
+          },
+        },
       ],
+      "/me/translateExchangeIds": [{
+        result: { value: [{ sourceId: "immutable-1", targetId: "rest-1" }] },
+      }],
     });
 
     const res = await listEmails(client, account(), { folder: "inbox", limit: 5 });
 
     expect(res.items[0]).toEqual(expect.objectContaining({
       id: "immutable-1",
-      webUrlUnavailableReason: expect.any(String),
+      webUrl: "https://outlook.office365.com/owa/?ItemID=rest-1&exvsurl=1",
     }));
     expect(calls[0]?.headers).toEqual({ Prefer: OUTLOOK_IMMUTABLE_ID_PREFER });
     expect(calls[0]?.select).toContain("webLink");
     expect(calls[0]?.select).toContain("parentFolderId");
+    expect(calls[1]).toEqual(expect.objectContaining({
+      endpoint: "/me/translateExchangeIds",
+      body: {
+        inputIds: ["immutable-1"],
+        sourceIdType: "restImmutableEntryId",
+        targetIdType: "restId",
+      },
+    }));
   });
 
   it("falls back from localized folder display names to folder IDs", async () => {
@@ -204,6 +223,7 @@ describe("Outlook read operations", () => {
       `/me/mailFolders/${encodeURIComponent(folder)}/messages`,
       "/me/mailFolders",
       `/me/mailFolders/${folderId}/messages`,
+      "/me/translateExchangeIds",
     ]);
   });
 
@@ -225,19 +245,61 @@ describe("Outlook read operations", () => {
     const res = await readEmail(client, account(), legacyId);
 
     expect(res.id).toBe(legacyId);
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
     expect(calls[0]?.headers).toEqual({ Prefer: OUTLOOK_IMMUTABLE_ID_PREFER });
     expect(calls[1]?.headers).toEqual({});
-    expect(calls[2]?.endpoint).toBe("/me/translateExchangeIds");
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ endpoint: "/me/translateExchangeIds" }),
+    );
   });
 
-  it("returns Graph web links for full reads", async () => {
-    const { client } = fakeClient({
-      "/me/messages/message-1": [{ result: { ...message("message-1"), webLink: "https://outlook.example/message-1" } }],
+  it("replaces Graph's immutable OWA ItemID with the default REST ID required by Outlook", async () => {
+    const { client, calls } = fakeClient({
+      "/me/messages/message-1": [{
+        result: {
+          ...message("message-1"),
+          webLink: "https://outlook.office.com/owa/?ItemID=immutable-wrong&exvsurl=1&viewmodel=ReadMessageItem",
+        },
+      }],
+      "/me/translateExchangeIds": [{
+        result: { value: [{ sourceId: "message-1", targetId: "rest/id+1" }] },
+      }],
     });
 
     await expect(readEmail(client, account(), "message-1")).resolves.toEqual(
-      expect.objectContaining({ webUrl: "https://outlook.example/message-1" }),
+      expect.objectContaining({
+        webUrl: "https://outlook.office.com/owa/?ItemID=rest%2Fid%2B1&exvsurl=1&viewmodel=ReadMessageItem",
+      }),
+    );
+    expect(calls.at(-1)).toEqual(expect.objectContaining({
+      endpoint: "/me/translateExchangeIds",
+      body: {
+        inputIds: ["message-1"],
+        sourceIdType: "restImmutableEntryId",
+        targetIdType: "restId",
+      },
+    }));
+  });
+
+  it("normalizes modern personal-account links without double-encoding IDs", async () => {
+    const { client } = fakeClient({
+      "/me/messages/message-1": [{
+        result: {
+          ...message("message-1"),
+          webLink:
+            "https://outlook.live.com/mail/deeplink/read/immutable-old?ItemID=immutable-old&foo=bar",
+        },
+      }],
+      "/me/translateExchangeIds": [{
+        result: { value: [{ sourceId: "message-1", targetId: "rest/id+==" }] },
+      }],
+    });
+
+    await expect(readEmail(client, account(), "message-1")).resolves.toEqual(
+      expect.objectContaining({
+        webUrl:
+          "https://outlook.live.com/mail/deeplink/read/rest%2Fid%2B%3D%3D?ItemID=rest%2Fid%2B%3D%3D&foo=bar",
+      }),
     );
   });
 
@@ -322,6 +384,7 @@ describe("Outlook read operations", () => {
       { Prefer: OUTLOOK_IMMUTABLE_ID_PREFER },
       { Prefer: OUTLOOK_IMMUTABLE_ID_PREFER },
       { Prefer: OUTLOOK_IMMUTABLE_ID_PREFER },
+      {},
     ]);
   });
 
