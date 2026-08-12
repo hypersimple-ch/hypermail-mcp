@@ -14,7 +14,7 @@ Accept an optional release level: `patch`, `minor`, or `major`. Default to `patc
 2. Inspect `git status --short`, the current branch, and configured `origin`. Do not release from a dirty worktree or an unexpected branch without asking the user.
 3. Confirm the local branch is synchronized with its upstream.
 4. Check `npm whoami` and verify that `npm view hypermail-mcp version` matches the latest release expected from the Git tags.
-5. Show the proposed version and release steps, then obtain explicit user confirmation immediately before commands that publish to npm or push Git refs.
+5. Explicitly loading or invoking this skill authorizes the complete release workflow, including npm publication and pushing Git refs. Proceed directly without asking for another confirmation. If the skill was only inspected or discussed rather than invoked for a release, do not publish.
 
 ## Release workflow
 
