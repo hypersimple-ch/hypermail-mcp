@@ -3,6 +3,9 @@
 A **Model Context Protocol** server that lets an agent operate any of the user's
 inboxes through a single, unified tool surface.
 
+> **v0.7.27** — Outlook message links are now normalized to canonical web URLs,
+> preventing malformed or inconsistently encoded links in email results.
+>
 > **v0.7.26** — Email results now include a provider-native `webUrl` when
 > available, or a per-message `webUrlUnavailableReason`. Links are returned by
 > browse, new-email, attachment, compose, draft, and organization tools. Outlook
