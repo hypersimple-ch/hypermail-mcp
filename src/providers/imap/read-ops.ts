@@ -1,7 +1,4 @@
-import { createWriteStream } from "node:fs";
-import { tmpdir } from "node:os";
-import { join as pathJoin } from "node:path";
-import { pipeline } from "node:stream/promises";
+import { writeAttachmentFile } from "../shared/attachment-files.js";
 import type { Readable } from "node:stream";
 
 import type { AccountRecord } from "../../store/account-store.js";
@@ -227,11 +224,7 @@ export async function readAttachment(
       uid: true,
     });
 
-    const outPath = pathJoin(tmpdir(), name);
-    await pipeline(
-      content as unknown as Readable,
-      createWriteStream(outPath),
-    );
+    const outPath = await writeAttachmentFile(name, content as unknown as Readable);
 
     return {
       name,

@@ -6,6 +6,7 @@ Dockerfile-only deployment — no compose file, no port bindings, no manual labe
 
 - A domain pointed at your VPS (e.g. `mail-api.example.com`)
 - Dokploy installed and connected to your Git provider
+- An authentication/authorization boundary for `/mcp`, or private-network-only access
 
 ## Step-by-step
 
@@ -42,7 +43,21 @@ This persists your encrypted tokens across redeploys. Dokploy creates the host p
 
 Go to the **Domains** tab → **Add Domain** → enter your domain (e.g. `mail-api.example.com`).
 
-Dokploy auto-generates Traefik routing and provisions a Let's Encrypt TLS certificate on deploy. No manual config needed.
+Dokploy provisions routing and TLS, but those are not authentication. Before
+publishing the domain, configure proxy authentication and authorization for
+`/mcp`, and restrict direct access to the backend/container port using private
+networking/firewall rules. Validate allowed Host and Origin values at the proxy.
+Preserve `Mcp-Session-Id`, `Mcp-Protocol-Version`, `Content-Type`, and `Accept`
+headers in both directions, retain SSE streaming without response buffering,
+and allow GET, POST, and DELETE.
+
+`HYPERMAIL_KEY` is encryption at rest, not caller authentication. MCP session
+IDs are not credentials. `HYPERMAIL_TOOLS_ENABLED`/`HYPERMAIL_TOOLS_DISABLED`
+provide tool filtering only; they are not an HTTP security boundary.
+
+If public hosted Gmail OAuth is needed, exempt only the existing
+`/oauth/gmail/callback` path from MCP access restrictions. OAuth state validation
+remains provider-owned. Do not expose the whole backend for this exception.
 
 ### 5. Deploy
 
@@ -55,8 +70,15 @@ Click **Deploy**. Check **Logs** — you should see:
 ### 6. Verify
 
 ```bash
+# Supply your boundary's authentication credentials through its documented mechanism.
 curl https://your-domain.com/mcp
 ```
+
+An unauthenticated external request must be rejected by your boundary. An
+authorized request without an MCP session returns 400 until it initializes.
+Use an MCP client to initialize, list tools, and DELETE its session; reusing that
+expired session ID must return 404. TLS or a successful unauthenticated request
+alone is not proof of a safe deployment.
 
 ## Connecting clients
 

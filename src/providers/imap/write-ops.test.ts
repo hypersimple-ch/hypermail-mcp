@@ -1,3 +1,9 @@
+import { Readable } from "node:stream";
+import nodemailer from "nodemailer";
+import type { ImapFlow } from "imapflow";
+import type { SendMailOptions } from "nodemailer";
+import { addAttachmentToDraft, removeAttachmentsFromDraft } from "./write-ops.js";
+import { findAttachments, type BodyNode } from "./helpers.js";
 import { simpleParser } from "mailparser";
 import type { ParsedMail } from "mailparser";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
@@ -36,6 +42,7 @@ async function originalDraftSource(html = "<p>Original body</p>"): Promise<strin
       cc: "Original Cc <original-cc@example.com>",
       bcc: "Original Bcc <original-bcc@example.com>",
       subject: "Original subject",
+      messageId: "<original@example.com>",
       html,
       attachments: [{ filename: "original.txt", content: "original attachment" }],
     }).compile();
@@ -252,43 +259,6 @@ describe("IMAP draft write operations", () => {
     expect(draft.text).toContain("Identifiable referenced plain text");
   });
 
-  it("embeds forwarded message content in saved IMAP drafts", async () => {
-    let appendedRaw = "";
-    const append = vi.fn(async (_folder, raw: string) => {
-      appendedRaw = raw;
-      return { uid: 125 };
-    });
-    const list = vi.fn(async () => []);
-    const client = {
-      run: vi.fn(async (fn) => fn({ append, list })),
-      withMailbox: vi.fn(async (_folder, fn) =>
-        fn({
-          fetchOne: async () => ({
-            envelope: { subject: "Original", messageId: "<original@example.com>" },
-            source: "ORIGINAL",
-          }),
-        }),
-      ),
-    };
-
-    const result = await saveDraft(clientsFor(client), account, {
-      to: [{ address: "recipient@example.com" }],
-      subject: "Forward draft",
-      body: "<p>See forwarded message.</p>",
-      isHtml: true,
-      inReplyTo: false,
-      forwardMessageId: "Archive/9",
-    });
-
-    expect(result).toEqual({
-      id: "Drafts/125",
-      webUrlUnavailableReason: IMAP_WEB_URL_UNAVAILABLE_REASON,
-    });
-    expect(client.withMailbox).toHaveBeenCalledWith("Archive", expect.any(Function));
-    expect(appendedRaw).toContain("Forwarded message");
-    expect(appendedRaw).toContain("ORIGINAL");
-  });
-
   it("uses the advertised Drafts special-use mailbox", async () => {
     const append = vi.fn(async () => ({ uid: 126 }));
     const list = vi.fn(async () => [
@@ -470,7 +440,7 @@ describe("IMAP draft write operations", () => {
     const draftClient = {
       getTransporter: () => transporter,
       withMailbox: vi.fn(async (_folder, fn) => fn({
-        fetchOne: vi.fn(async () => ({ source: "raw draft" })),
+        fetchOne: vi.fn(async () => ({ source: "From: user@example.com\r\nTo: recipient@example.com\r\nSubject: Draft\r\n\r\nBody" })),
         messageMove: vi.fn(),
       })),
     };
@@ -522,5 +492,164 @@ describe("IMAP draft write operations", () => {
       id: "INBOX/5",
       webUrlUnavailableReason: IMAP_WEB_URL_UNAVAILABLE_REASON,
     });
+  });
+});
+
+async function realisticDraft(): Promise<Buffer> {
+  const compiled = new MailComposer({
+    from: { name: "User, Quoted", address: account.email }, to: [{ name: "To, Quoted", address: "to@example.com" }],
+    cc: "cc@example.com", bcc: "secret@example.com", subject: "Original",
+    messageId: "<draft@example.com>", date: new Date("2025-01-01T12:00:00Z"), references: ["<prior@example.com>"],
+    text: "plain original\n--body-line", html: '<p>html original<img src="cid:image"></p>',
+    headers: { "X-Custom": "retained" },
+    attachments: [{ filename: "same.pdf", content: "one", contentType: "application/pdf" }, { filename: "same.pdf", content: "two", contentType: "application/pdf" }, { filename: "same.pdf", content: "two", contentType: "application/pdf" }, { filename: "café.pdf", content: "unicode", contentType: "application/pdf" }, { filename: "image.png", content: "image", contentType: "image/png", cid: "image" }],
+  }).compile();
+  compiled.keepBcc = true;
+  return new Promise<Buffer>((resolve, reject) => {
+    compiled.build((error: Error | null, bytes: Buffer) => error ? reject(error) : resolve(bytes));
+  });
+}
+
+async function mailboxFake() {
+  const sources = new Map<number, Buffer>([[5, await realisticDraft()]]);
+  let nextUid = 10;
+  const events: string[] = [];
+  let failAppend = false; let failRead = false; let failDelete = false; let failSmtp = false;
+  let emitted: Buffer | undefined; let envelope: { from: string | false; to: string[] } | undefined;
+  const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+  const imap = {
+    fetchOne: async (uid: number) => {
+      const source = sources.get(uid);
+      if (!source || (failRead && uid !== 5)) return false;
+      const parsed = await simpleParser(source);
+      return { source, bodyStructure: { type: "multipart/mixed", childNodes: parsed.attachments.map((attachment, index) => ({ part: `${index + 1}`, type: attachment.contentType, disposition: attachment.contentDisposition, dispositionParameters: { filename: attachment.filename }, parameters: attachment.cid ? { name: attachment.filename } : undefined })) } };
+    },
+    append: async (_folder: string, raw: string) => {
+      if (failAppend) throw new Error("append failed");
+      const uid = nextUid++; sources.set(uid, Buffer.from(raw)); events.push(`append:${uid}`); return { uid };
+    },
+    messageDelete: async (uid: number) => { if (failDelete) throw new Error("delete failed"); events.push(`delete:${uid}`); sources.delete(uid); },
+    download: async (uid: number, part: string) => ({ content: Readable.from([(await simpleParser(sources.get(uid)!)).attachments[Number(part) - 1]!.content]) }),
+    messageMove: async (uid: number) => { events.push(`move:${uid}`); sources.delete(uid); },
+    list: async () => [],
+  };
+  const client = {
+    withMailbox: async <T>(_folder: string, fn: (imap: ImapFlow) => Promise<T>) => fn(imap as unknown as ImapFlow),
+    run: async <T>(fn: (imap: ImapFlow) => Promise<T>) => fn(imap as unknown as ImapFlow),
+    getTransporter: () => ({ sendMail: async (options: SendMailOptions) => {
+      if (failSmtp) throw new Error("smtp failed");
+      // SMTP serializes with keepBcc=false; stream transport itself forces true.
+      const compiled = new MailComposer(options).compile();
+      const wire = await new Promise<Buffer>((resolve, reject) => {
+        compiled.build((error: Error | null, bytes: Buffer) => error ? reject(error) : resolve(bytes));
+      });
+      const info = await transport.sendMail({ raw: wire, envelope: options.envelope ?? compiled.getEnvelope() });
+      emitted = info.message as Buffer; envelope = info.envelope;
+      return info;
+    } }),
+  };
+  return {
+    clients: clientsFor(client), sources, events,
+    read: async (id: string) => simpleParser(sources.get(Number(id.split("/").at(-1)))!),
+    metadata: async (id: string) => {
+      const message = await imap.fetchOne(Number(id.split("/").at(-1)));
+      if (!message) throw new Error(`message not readable: ${id}`);
+      return findAttachments(message.bodyStructure as BodyNode);
+    },
+    emitted: () => emitted, envelope: () => envelope,
+    setFailure: (kind: "append" | "read" | "delete" | "smtp") => { failAppend = kind === "append"; failRead = kind === "read"; failDelete = kind === "delete"; failSmtp = kind === "smtp"; },
+  };
+}
+
+describe("IMAP MIME replacement and SMTP consumer behavior", () => {
+  it("preserves subject-only edits and replaces alternatives only for explicit body edits", async () => {
+    const state = await mailboxFake(); const before = await state.read("Drafts/5");
+    const result = await updateDraft(state.clients, account, "Drafts/5", { subject: "changed" });
+    const after = await state.read(result.id);
+    expect(after.text).toBe(before.text); expect(after.html).toBe(before.html); expect(after.to).toEqual(before.to);
+    expect(after.messageId).toBe(before.messageId); expect(after.date).toEqual(before.date); expect(after.references).toEqual(before.references);
+    expect(after.attachments.map((a) => [a.filename, a.content.toString(), a.cid])).toEqual(before.attachments.map((a) => [a.filename, a.content.toString(), a.cid]));
+    const replaced = await updateDraft(state.clients, account, result.id, { body: "", isHtml: false, cc: [], bcc: [] });
+    const final = await state.read(replaced.id); expect(final.html).toBe(false); expect(final.text ?? "").toBe(""); expect(final.cc).toBeUndefined(); expect(final.bcc).toBeUndefined();
+  });
+  it("adds real listed attachment IDs and bulk-removes only selected duplicate occurrences", async () => {
+    const state = await mailboxFake();
+    const added = await addAttachmentToDraft(state.clients, account, "Drafts/5", "same.pdf", Buffer.from("two").toString("base64"), "application/pdf");
+    expect((await state.metadata(added.id)).map((part) => part.part)).toContain(added.attachment.id);
+    expect((await state.read(added.id)).attachments[Number(added.attachment.id) - 1]?.content.toString()).toBe("two");
+    const selected = (await state.metadata(added.id)).filter((part) => part.name === "same.pdf").slice(0, 2).map((part) => part.part);
+    const removed = await removeAttachmentsFromDraft(state.clients, account, added.id, [...selected, selected[1]!]);
+    const final = await state.read(removed.id);
+    expect(final.attachments.filter((a) => a.filename === "same.pdf").map((a) => a.content.toString())).toEqual(["two", "two"]);
+    expect(final.attachments.find((a) => a.filename === "café.pdf")?.content.toString()).toBe("unicode");
+    expect(final.text).toContain("--body-line");
+    expect(state.events).toEqual(["append:10", "delete:5", "append:11", "delete:10"]);
+  });
+  it.each(["append", "read"] as const)("preserves original UID on %s failure", async (failure) => {
+    const state = await mailboxFake();
+    const selected = (await state.metadata("Drafts/5")).find((part) => part.name === "same.pdf")!.part;
+    state.setFailure(failure);
+    await expect(removeAttachmentsFromDraft(state.clients, account, "Drafts/5", [selected])).rejects.toThrow(failure === "append" ? "append failed" : "not readable");
+    expect(state.sources.has(5)).toBe(true); expect(state.events.some((event) => event.startsWith("delete:"))).toBe(false);
+  });
+  it("fails an unknown attachment before APPEND and reports both UIDs if deletion fails", async () => {
+    const state = await mailboxFake();
+    await expect(removeAttachmentsFromDraft(state.clients, account, "Drafts/5", ["unknown"])).rejects.toThrow("attachment not found"); expect(state.events).toEqual([]);
+    state.setFailure("delete");
+    const selected = (await state.metadata("Drafts/5")).find((part) => part.name === "same.pdf")!.part;
+    await expect(removeAttachmentsFromDraft(state.clients, account, "Drafts/5", [selected])).rejects.toThrow("replacement Drafts/10 created but original Drafts/5");
+    expect(state.sources.has(5)).toBe(true); expect(state.sources.has(10)).toBe(true);
+  });
+  it("serializes SMTP without Bcc header while explicitly delivering To/Cc/Bcc and preserving content", async () => {
+    const state = await mailboxFake(); await sendDraft(state.clients, account, "Drafts/5");
+    expect(state.envelope()).toEqual({ from: account.email, to: ["to@example.com", "cc@example.com", "secret@example.com"] });
+    const sent = await simpleParser(state.emitted()!); expect(sent.bcc).toBeUndefined(); expect(sent.subject).toBe("Original");
+    expect(sent.text).toContain("plain original"); expect(sent.html).toContain("html original"); expect(sent.attachments.map((a) => [a.filename, a.content.toString()]).sort()).toEqual([["same.pdf", "one"], ["same.pdf", "two"], ["same.pdf", "two"], ["café.pdf", "unicode"], ["image.png", "image"]].sort());
+    expect(state.events).toEqual(["move:5"]);
+  });
+  it("leaves draft intact on SMTP failure and rejects empty envelope", async () => {
+    const state = await mailboxFake(); state.setFailure("smtp");
+    await expect(sendDraft(state.clients, account, "Drafts/5")).rejects.toThrow("smtp failed"); expect(state.sources.has(5)).toBe(true); expect(state.events).toEqual([]);
+    state.sources.set(5, Buffer.from("From: user@example.com\r\nSubject: no recipients\r\n\r\nbody"));
+    await expect(sendDraft(state.clients, account, "Drafts/5")).rejects.toThrow("no recipients"); expect(state.sources.has(5)).toBe(true);
+  });
+  it("fails explicit source loads before sending/saving and quotes parsed reply/forward content", async () => {
+    const state = await mailboxFake();
+    const input = { to: [{ address: "explicit@example.com" }], bcc: [{ address: "requested@example.com" }], subject: "Reply", body: "<p>new</p>", isHtml: true, inReplyTo: "Drafts/5", replyAll: true };
+    const reply = await saveDraft(state.clients, account, input); const parsedReply = await state.read(reply.id);
+    expect(parsedReply.inReplyTo).toBe("<draft@example.com>"); expect(parsedReply.references).toEqual(["<prior@example.com>", "<draft@example.com>"]);
+    expect(addresses(parsedReply.to)).toEqual(["explicit@example.com", "to@example.com"]); expect(addresses(parsedReply.cc)).toEqual(["cc@example.com"]); expect(addresses(parsedReply.bcc)).toEqual(["requested@example.com"]); expect(parsedReply.attachments.map((a) => a.filename)).toEqual(["image.png"]);
+    const forward = await saveDraft(state.clients, account, { ...input, inReplyTo: false, forwardMessageId: "Drafts/5" }); const parsedForward = await state.read(forward.id);
+    expect(parsedForward.html).toContain("html original"); expect(parsedForward.html).not.toContain("Content-Transfer-Encoding:"); expect(parsedForward.attachments.map((a) => [a.filename, a.content.toString()]).sort()).toEqual([["same.pdf", "one"], ["same.pdf", "two"], ["same.pdf", "two"], ["café.pdf", "unicode"], ["image.png", "image"]].sort());
+    const previous = state.events.slice();
+    await expect(sendEmail(state.clients, account, { ...input, inReplyTo: "Drafts/99" })).rejects.toThrow("reference message not found"); expect(state.emitted()).toBeUndefined(); expect(state.events).toEqual(previous);
+  });
+});
+
+describe("IMAP direct reference sending", () => {
+  it.each(["reply", "forward"] as const)("sends decoded %s content with supplied attachments", async (kind) => {
+    const state = await mailboxFake();
+    await sendEmail(state.clients, account, {
+      to: [{ address: "explicit@example.com" }], bcc: [{ address: "requested@example.com" }],
+      subject: "Composed", body: "<p>new</p>", isHtml: true, replyAll: true,
+      inReplyTo: kind === "reply" ? "Drafts/5" : false,
+      forwardMessageId: kind === "forward" ? "Drafts/5" : undefined,
+      attachments: [{ name: "user.txt", contentBytes: Buffer.from("user supplied").toString("base64"), contentType: "text/plain" }],
+    });
+    const parsed = await simpleParser(state.emitted()!, { skipImageLinks: true });
+    expect(parsed.html).toContain("html original"); expect(parsed.html).toContain("cid:image");
+    expect(parsed.html).not.toContain("Content-Transfer-Encoding:");
+    expect(parsed.attachments.find((attachment) => attachment.filename === "user.txt")?.content.toString()).toBe("user supplied");
+    expect(parsed.bcc).toBeUndefined();
+    expect(state.envelope()?.to).toContain("requested@example.com");
+    if (kind === "reply") {
+      expect(parsed.inReplyTo).toBe("<draft@example.com>");
+      expect(parsed.references).toEqual(["<prior@example.com>", "<draft@example.com>"]);
+      expect(addresses(parsed.to)).toEqual(["explicit@example.com", "to@example.com"]);
+      expect(parsed.attachments.map((attachment) => attachment.filename)).toEqual(["image.png", "user.txt"]);
+    } else {
+      expect(parsed.inReplyTo).toBeUndefined();
+      expect(parsed.attachments.map((attachment) => [attachment.filename, attachment.content.toString()]).sort()).toEqual([["same.pdf", "one"], ["same.pdf", "two"], ["same.pdf", "two"], ["café.pdf", "unicode"], ["image.png", "image"], ["user.txt", "user supplied"]].sort());
+    }
   });
 });

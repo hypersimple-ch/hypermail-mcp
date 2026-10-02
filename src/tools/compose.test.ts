@@ -512,7 +512,7 @@ describe("edit_draft", () => {
     const provider = {
       id: "outlook",
       updateDraft: vi.fn(),
-      removeAttachmentFromDraft: vi.fn(async () => undefined),
+      removeAttachmentsFromDraft: vi.fn(async () => ({ id: "draft-1" })),
       readEmail: vi.fn(async () => ({
         id: "draft-1",
         subject: "Subject",
@@ -528,11 +528,40 @@ describe("edit_draft", () => {
     });
 
     expect(provider.updateDraft).not.toHaveBeenCalled();
-    expect(provider.removeAttachmentFromDraft).toHaveBeenCalledWith(
+    expect(provider.removeAttachmentsFromDraft).toHaveBeenCalledWith(
       account,
       "draft-1",
-      "att-1",
+      ["att-1"],
     );
     expect(structured(result)).toMatchObject({ edited: true, id: "draft-1" });
+  });
+});
+
+describe("combined draft replacement identity", () => {
+  it("removes original IDs before body edits/additions and returns final attachment metadata", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "compose-replacement-"));
+    const path = join(dir, "new.txt"); writeFileSync(path, "new bytes");
+    try {
+      let current = "original"; let body = "<p>before</p>"; let attachments = [{ id: "original-remove", name: "remove.txt" }, { id: "original-keep", name: "keep.txt" }];
+      const operations: string[] = [];
+      const assertCurrent = (id: string) => { if (id !== current) throw new Error(`stale ID: ${id}`); };
+      const provider = {
+        id: "gmail",
+        readEmail: async (_account: AccountRecord, id: string) => { assertCurrent(id); return { id, subject: "Subject", bodyHtml: body, attachments }; },
+        removeAttachmentsFromDraft: async (_account: AccountRecord, id: string, ids: string[]) => {
+          assertCurrent(id); if (ids.join(",") !== "original-remove") throw new Error("removal ID was not original");
+          operations.push("remove"); current = "removed"; attachments = [{ id: "removed-keep", name: "keep.txt" }]; return { id: current };
+        },
+        updateDraft: async (_account: AccountRecord, id: string, update: { body?: string }) => {
+          assertCurrent(id); operations.push("update"); body = update.body!; current = "updated"; attachments = [{ id: "updated-keep", name: "keep.txt" }]; return { id: current };
+        },
+        addAttachmentToDraft: async (_account: AccountRecord, id: string, name: string) => {
+          assertCurrent(id); operations.push("add"); current = "final"; attachments = [{ id: "final-keep", name: "keep.txt" }, { id: "final-new", name }]; return { id: current, attachment: attachments[1]! };
+        },
+      } as unknown as EmailProvider;
+      const result = await registerHandler(provider)({ account: account.email, id: "original", old_text: "before", new_text: "after", format: "html", remove_attachments: ["original-remove"], new_attachments: [{ filePath: path }] });
+      expect(structured(result)).toEqual({ edited: true, id: "final", draftHtml: "<p>after</p>", attachments: [{ id: "final-keep", name: "keep.txt" }, { id: "final-new", name: "new.txt" }] });
+      expect(operations).toEqual(["remove", "update", "add"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

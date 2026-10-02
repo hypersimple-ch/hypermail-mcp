@@ -2,6 +2,7 @@ import type { Client } from "@microsoft/microsoft-graph-client";
 import { describe, expect, it } from "vitest";
 
 import { buildDraftFromReference, THREAD_MARKER, updateDraft } from "./write-ops.js";
+import { removeAttachmentsFromDraft } from "./write-ops.js";
 
 interface PatchCall {
   endpoint: string;
@@ -224,5 +225,31 @@ describe("buildDraftFromReference", () => {
           "Bonjour</blockquote>",
       },
     });
+  });
+});
+
+describe("Outlook bulk attachment deletion", () => {
+  it("validates all IDs first and returns the surviving draft reference", async () => {
+    const attachments = new Set(["first", "second", "retained"]);
+    const events: string[] = [];
+    const client = { api: (endpoint: string) => {
+      const id = endpoint.split("/attachments/")[1];
+      const request = {
+        header: () => request, select: () => request,
+        get: async () => {
+          if (!id) return { id: "draft", webLink: "https://outlook.office.com/mail/draft" };
+          events.push(`get:${id}`); if (!attachments.has(id)) throw new Error(`missing ${id}`); return { id };
+        },
+        delete: async () => { events.push(`delete:${id}`); attachments.delete(id!); },
+      };
+      return request;
+    } } as unknown as Client;
+    const account = { email: "user@example.com", provider: "outlook" as const, tokens: {}, addedAt: "2026-01-01" };
+    await expect(removeAttachmentsFromDraft(client, account, "draft", ["first", "missing"])).rejects.toThrow("missing missing");
+    expect([...attachments]).toEqual(["first", "second", "retained"]);
+    events.length = 0;
+    expect(await removeAttachmentsFromDraft(client, account, "draft", ["first", "second", "first"])).toEqual({ id: "draft", webUrl: "https://outlook.office.com/mail/draft" });
+    expect([...attachments]).toEqual(["retained"]);
+    expect(events).toEqual(["get:first", "get:second", "delete:first", "delete:second"]);
   });
 });

@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
-
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import type { AccountRecord } from "../../store/account-store.js";
 import type { ImapFlow } from "imapflow";
 import { simpleParser, type ParsedMail } from "mailparser";
-import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import { buildParsedDraft, matchingAttachmentIndex, parsedAddresses, parsedMailOptions } from "../shared/draft-mime.js";
 
 import type {
   DraftUpdateInput,
@@ -12,15 +11,13 @@ import type {
 } from "../types.js";
 import { ImapClientFactory } from "./client.js";
 import {
-  addressText,
   buildMailOptions,
   buildRawMessage,
-  formatAddresses,
-  normalizeBodyLineEndings,
 } from "./message-builder.js";
 import {
   decodeId,
   encodeId,
+  findAttachments,
   isTrashFolderAlias,
   webLinkUnavailableReference,
   resolveDraftMailbox,
@@ -28,10 +25,6 @@ import {
   resolveTrashMailbox,
 } from "./helpers.js";
 import type { BodyNode, ImapMailboxEntry } from "./helpers.js";
-import {
-  findAttachmentInMime,
-  removeMimePart,
-} from "./mime-utils.js";
 
 /** Write operations for IMAP — send, draft, move, mark, folders. */
 
@@ -47,7 +40,10 @@ export async function sendEmail(
 
   // Save a copy to Sent folder
   try {
-    const rawMsg = await buildRawMessage(client, account, msg, info.messageId);
+    const compiled = new MailComposer({ ...mailOptions, messageId: info.messageId }).compile();
+    const rawMsg = await new Promise<Buffer>((resolve, reject) => {
+      compiled.build((error: Error | null, bytes: Buffer) => error ? reject(error) : resolve(bytes));
+    });
     await client.run(async (imap) => {
       await imap.append("Sent", rawMsg, ["\\Seen"]);
     });
@@ -101,43 +97,8 @@ export async function updateDraft(
         typeof existing.source === "string"
           ? Buffer.from(existing.source, "utf-8")
           : Buffer.from(existing.source);
-      const parsed: ParsedMail = await simpleParser(source);
-      const existingHtml = parsed.html === false ? undefined : parsed.html;
-      const text = normalizeBodyLineEndings(
-        update.body !== undefined && !update.isHtml ? update.body : parsed.text,
-      );
-      const html = normalizeBodyLineEndings(
-        update.body !== undefined && update.isHtml ? update.body : existingHtml,
-      );
-      const updatedMsg: Record<string, unknown> = {
-        from: addressText(parsed.from) ?? `${account.displayName ?? ""} <${account.email}>`,
-        to: update.to ? formatAddresses(update.to) : addressText(parsed.to),
-        cc: update.cc ? formatAddresses(update.cc) : addressText(parsed.cc),
-        bcc: update.bcc ? formatAddresses(update.bcc) : addressText(parsed.bcc),
-        subject: update.subject ?? parsed.subject ?? "",
-        text,
-        html,
-        inReplyTo: parsed.inReplyTo,
-        references: parsed.references,
-        attachments: parsed.attachments.map((attachment) => ({
-          filename: attachment.filename,
-          content: attachment.content,
-          contentType: attachment.contentType,
-          contentDisposition: attachment.contentDisposition,
-          cid: attachment.cid,
-        })),
-        attachDataUrls: true,
-      };
-
-      const raw = await new Promise<Buffer>((resolve, reject) => {
-        const mc = new MailComposer(updatedMsg);
-        const compiled = mc.compile();
-        compiled.keepBcc = true;
-        compiled.build((err: Error | null, buf: Buffer) => {
-          if (err) reject(err);
-          else resolve(buf);
-        });
-      });
+      const parsed: ParsedMail = await simpleParser(source, { skipImageLinks: true });
+      const raw = await buildParsedDraft(parsed, update, parsed.attachments);
 
       const result = await appendDraft(imap, folder, raw.toString("utf-8"));
       const appendedUid = appendUid(result, folder);
@@ -150,7 +111,8 @@ export async function updateDraft(
         throw new Error(`appended IMAP draft ${encodeId(folder, appendedUid)} is not readable`);
       }
 
-      await imap.messageDelete(uid, { uid: true });
+      try { await imap.messageDelete(uid, { uid: true }); }
+      catch (error) { throw imapOperationError(`replacement ${encodeId(folder, appendedUid)} created but original ${id} could not be deleted`, error); }
       return webLinkUnavailableReference(encodeId(folder, appendedUid));
     });
   } catch (err) {
@@ -218,8 +180,13 @@ export async function sendDraft(
         ? draft.source
         : Buffer.from(draft.source as ArrayBuffer).toString("utf-8");
 
+    const parsed = await simpleParser(sourceStr, { skipImageLinks: true });
+    const options = parsedMailOptions(parsed);
+    const recipients = [...parsedAddresses(parsed.to), ...parsedAddresses(parsed.cc), ...parsedAddresses(parsed.bcc)].map((address) => address.address);
+    if (recipients.length === 0) throw new Error(`draft has no recipients: ${id}`);
+    options.envelope = { from: parsedAddresses(parsed.from)[0]?.address ?? account.email, to: recipients };
     const transporter = client.getTransporter();
-    const info = await transporter.sendMail({ raw: sourceStr });
+    const info = await transporter.sendMail(options);
 
     try {
       await imap.messageMove(uid, "Sent", { uid: true });
@@ -231,106 +198,71 @@ export async function sendDraft(
   });
 }
 
-export async function addAttachmentToDraft(
-  clients: ImapClientFactory,
-  account: AccountRecord,
-  draftId: string,
-  name: string,
-  contentBytes: string,
-  contentType?: string,
-): Promise<{
-  id: string;
-  attachment: { id: string; name: string; contentType?: string };
-}> {
-  const client = clients.get(account);
-  const { folder, uid } = decodeId(draftId);
-
-  try {
-    return await client.withMailbox(folder, async (imap) => {
-      const existing = (await imap.fetchOne(
-        uid,
-        { source: true },
-        { uid: true },
-      )) as { source?: string | ArrayBuffer };
-      if (!existing?.source) {
-        throw new Error(`draft not found: ${draftId}`);
-      }
-
-      const sourceStr =
-        typeof existing.source === "string"
-          ? existing.source
-          : Buffer.from(existing.source as ArrayBuffer).toString("utf-8");
-
-      const built = await new Promise<Buffer>((resolve, reject) => {
-        const mc = new MailComposer({
-          raw: sourceStr,
-          attachments: [
-            {
-              filename: name,
-              content: Buffer.from(contentBytes, "base64"),
-              contentType: contentType ?? "application/octet-stream",
-            },
-          ],
-        });
-        mc.compile().build((err: Error | null, buf: Buffer) => {
-          if (err) reject(err);
-          else resolve(buf);
-        });
-      });
-
-      const result = await appendDraft(imap, folder, built.toString("utf-8"));
-      await imap.messageDelete(uid, { uid: true });
-
-      return {
-        id: encodeId(folder, appendUid(result, folder)),
-        attachment: {
-          id: randomUUID(),
-          name,
-          contentType: contentType ?? "application/octet-stream",
-        },
-      };
-    });
-  } catch (err) {
-    throw imapOperationError(`failed to add attachment to IMAP draft ${draftId}`, err);
-  }
+async function readDraft(imap: ImapFlow, uid: number, id: string) {
+  const existing = await imap.fetchOne(uid, { source: true, bodyStructure: true }, { uid: true });
+  if (!existing || !existing.source) throw new Error(`draft not found: ${id}`);
+  if (!existing.bodyStructure) throw new Error(`draft attachment metadata missing: ${id}`);
+  return { parsed: await simpleParser(Buffer.from(existing.source), { skipImageLinks: true }), structure: existing.bodyStructure as BodyNode };
 }
 
-export async function removeAttachmentFromDraft(
-  clients: ImapClientFactory,
-  account: AccountRecord,
-  draftId: string,
-  attachmentId: string,
-): Promise<void> {
+async function replaceDraft(imap: ImapFlow, folder: string, uid: number, raw: Buffer): Promise<number> {
+  const appendedUid = appendUid(await appendDraft(imap, folder, raw.toString("utf-8")), folder);
+  const appended = await imap.fetchOne(appendedUid, { source: true }, { uid: true });
+  if (!appended || !appended.source) throw new Error(`appended IMAP draft ${encodeId(folder, appendedUid)} is not readable; original ${encodeId(folder, uid)} retained`);
+  try { await imap.messageDelete(uid, { uid: true }); }
+  catch (error) { throw imapOperationError(`replacement ${encodeId(folder, appendedUid)} created but original ${encodeId(folder, uid)} could not be deleted`, error); }
+  return appendedUid;
+}
+
+async function downloadPart(imap: ImapFlow, uid: number, part: string): Promise<Buffer> {
+  const download = await imap.download(uid, part, { uid: true });
+  const chunks: Buffer[] = [];
+  for await (const chunk of download.content) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+export async function addAttachmentToDraft(clients: ImapClientFactory, account: AccountRecord, draftId: string, name: string, contentBytes: string, contentType = "application/octet-stream") {
   const client = clients.get(account);
   const { folder, uid } = decodeId(draftId);
-
   return client.withMailbox(folder, async (imap) => {
-    const existing = (await imap.fetchOne(
-      uid,
-      { source: true, bodyStructure: true },
-      { uid: true },
-    )) as { source?: string | ArrayBuffer; bodyStructure?: BodyNode };
-    if (!existing?.source) {
-      throw new Error(`draft not found: ${draftId}`);
+    const { parsed } = await readDraft(imap, uid, draftId);
+    const bytes = Buffer.from(contentBytes, "base64");
+    const ordinal = parsed.attachments.filter((attachment) => attachment.filename === name && attachment.contentType === contentType && attachment.content.equals(bytes)).length;
+    const added = { filename: name, content: bytes, contentType, contentDisposition: "attachment" } as typeof parsed.attachments[number];
+    const raw = await buildParsedDraft(parsed, {}, [...parsed.attachments, added]);
+    const result = await appendDraft(imap, folder, raw.toString("utf-8"));
+    const appendedUid = appendUid(result, folder);
+    const final = await readDraft(imap, appendedUid, encodeId(folder, appendedUid));
+    let matching = 0;
+    let attachmentId: string | undefined;
+    for (const part of findAttachments(final.structure)) {
+      if (part.name !== name || part.contentType !== contentType) continue;
+      if ((await downloadPart(imap, appendedUid, part.part)).equals(bytes) && matching++ === ordinal) { attachmentId = part.part; break; }
     }
+    if (!attachmentId) throw new Error(`replacement ${encodeId(folder, appendedUid)} created but added attachment is not readable; original ${draftId} retained`);
+    try { await imap.messageDelete(uid, { uid: true }); }
+    catch (error) { throw imapOperationError(`replacement ${encodeId(folder, appendedUid)} created but original ${draftId} could not be deleted`, error); }
+    return { id: encodeId(folder, appendedUid), attachment: { id: attachmentId, name, contentType } };
+  });
+}
 
-    const sourceStr =
-      typeof existing.source === "string"
-        ? existing.source
-        : Buffer.from(existing.source as ArrayBuffer).toString("utf-8");
-
-    // Parse MIME to find the attachment to remove
-    const targetInfo = findAttachmentInMime(existing.bodyStructure, attachmentId);
-    if (!targetInfo) {
-      throw new Error(`attachment not found: ${attachmentId}`);
+export async function removeAttachmentsFromDraft(clients: ImapClientFactory, account: AccountRecord, draftId: string, attachmentIds: string[]): Promise<EmailReference> {
+  const client = clients.get(account);
+  const { folder, uid } = decodeId(draftId);
+  return client.withMailbox(folder, async (imap) => {
+    const { parsed, structure } = await readDraft(imap, uid, draftId);
+    const retained = [...parsed.attachments];
+    const parts = findAttachments(structure);
+    for (const id of new Set(attachmentIds)) {
+      const part = parts.find((entry) => entry.part === id);
+      if (!part) throw new Error(`attachment not found: ${id}`);
+      const bytes = await downloadPart(imap, uid, id);
+      const index = matchingAttachmentIndex(retained, part.name, part.contentType, bytes);
+      if (index < 0) throw new Error(`cannot map attachment MIME part: ${id}`);
+      retained.splice(index, 1);
     }
-
-    // Remove the attachment from the MIME source
-    const modifiedSource = removeMimePart(sourceStr, targetInfo.filename, targetInfo.contentType);
-
-    // Delete old draft and append modified one
-    await imap.messageDelete(uid, { uid: true });
-    await imap.append(folder, modifiedSource, ["\\Draft"]);
+    const raw = await buildParsedDraft(parsed, {}, retained);
+    return webLinkUnavailableReference(encodeId(folder, await replaceDraft(imap, folder, uid, raw)));
   });
 }
 

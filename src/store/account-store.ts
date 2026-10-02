@@ -171,6 +171,28 @@ export class AccountStore {
     }));
   }
 
+  /** Patch only supplied settings against the latest account under the store lock. */
+  async updateSettings(
+    email: string,
+    patch: { signature?: string | null; style?: AccountRecord["style"] | null },
+  ): Promise<AccountRecord | undefined> {
+    return this.runSerial(email, async () => this.updateLocked((data) => {
+      const norm = email.trim().toLowerCase();
+      const idx = data.accounts.findIndex((a) => a.email.toLowerCase() === norm);
+      if (idx < 0) return { result: undefined, changed: false };
+      const next: AccountRecord = { ...data.accounts[idx]! };
+      if (patch.signature === null) delete next.signature;
+      else if (patch.signature !== undefined) next.signature = patch.signature;
+      if (patch.style === null) delete next.style;
+      else if (patch.style !== undefined) next.style = patch.style;
+      data.accounts[idx] = next;
+      return {
+        result: { ...next },
+        changed: patch.signature !== undefined || patch.style !== undefined,
+      };
+    }));
+  }
+
   async updateNewEmailCheckpoint(
     email: string,
     checkpoint: NewEmailCheckpoint,

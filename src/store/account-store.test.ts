@@ -36,6 +36,47 @@ async function withStore<T>(fn: (store: AccountStore) => Promise<T>): Promise<T>
 }
 
 describe("AccountStore", () => {
+  it("patches settings against refreshed persisted state without overwriting other fields", async () => {
+    await withDataDir(async (dataDir) => {
+      const stale = await AccountStore.open({ dataDir, key });
+      const original = account({
+        signature: "old",
+        style: { fontFamily: "serif" },
+        displayName: "Original",
+        newEmailCheckpoint: { receivedAt: "2026-01-02T00:00:00.000Z" },
+      });
+      await stale.upsertAccount(original);
+      const fresh = await AccountStore.open({ dataDir, key });
+      await fresh.updateTokens(original.email, { refreshed: true });
+      await fresh.updateSettings(original.email, { style: { fontColor: "red" } });
+      await stale.updateSettings(" A@EXAMPLE.COM ", { signature: "new" });
+
+      const reopened = await AccountStore.open({ dataDir, key });
+      expect(reopened.getAccount(original.email)).toMatchObject({
+        ...original,
+        tokens: { refreshed: true },
+        signature: "new",
+        style: { fontColor: "red" },
+      });
+    });
+  });
+
+  it("persists null settings removals and does not recreate a removed account", async () => {
+    await withDataDir(async (dataDir) => {
+      const stale = await AccountStore.open({ dataDir, key });
+      await stale.upsertAccount(account({ signature: "old", style: { fontSize: "12px" } }));
+      await stale.updateSettings("a@example.com", { signature: null, style: null });
+      const fresh = await AccountStore.open({ dataDir, key });
+      const cleared = fresh.getAccount("a@example.com")!;
+      expect(cleared).not.toHaveProperty("signature");
+      expect(cleared).not.toHaveProperty("style");
+      await fresh.removeAccount("a@example.com");
+      expect(await stale.updateSettings("a@example.com", { signature: "new" })).toBeUndefined();
+      const reopened = await AccountStore.open({ dataDir, key });
+      expect(reopened.getAccount("a@example.com")).toBeUndefined();
+    });
+  });
+
   it("preserves token and checkpoint fields across concurrent field updates", async () => {
     await withStore(async (store) => {
       await store.upsertAccount(account({

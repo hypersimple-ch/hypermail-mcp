@@ -1,13 +1,13 @@
-import { randomUUID } from "node:crypto";
+import type { gmail_v1 } from "googleapis";
 import { Buffer } from "node:buffer";
 
-import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import { simpleParser } from "mailparser";
+import { buildParsedDraft, matchingAttachmentIndex } from "../shared/draft-mime.js";
 
 import type { AccountRecord } from "../../store/account-store.js";
 import type {
   CreateFolderInput,
   DraftUpdateInput,
-  EmailAddress,
   EmailReference,
   FolderInfo,
   SendInput,
@@ -19,8 +19,6 @@ import {
   base64urlEncode,
   buildRawMessage,
   mapFolder,
-  mapHeaderAddr,
-  findHeader,
   gmailMessageWebLink,
   resolveLabel,
   resolveLabelsForMove,
@@ -30,166 +28,55 @@ import {
  * Write operations for Gmail — send, draft, move, mark, folders.
  */
 
-export async function sendEmail(
-  clients: GmailClientFactory,
-  account: AccountRecord,
-  msg: SendInput,
-): Promise<EmailReference> {
-  const { gmail } = clients.get(account);
-
-  let threadId: string | undefined;
-  let rawBody: { raw: string };
-
-  if (msg.forwardMessageId) {
-    const fwdRes = await gmail.users.messages.get({
-      userId: "me",
-      id: msg.forwardMessageId,
-      format: "raw",
-    });
-    threadId = fwdRes.data.threadId ?? undefined;
-    const fwdRaw = fwdRes.data.raw;
-    if (fwdRaw) {
-      const fwdStr = Buffer.from(
-        fwdRaw.replace(/-/g, "+").replace(/_/g, "/"),
-        "base64",
-      ).toString("utf-8");
-
-      const divider =
-        '\n\n<div style="line-height:12px"><br></div>\n\n' +
-        '<div style="border-left:2px solid #ccc; padding-left:8px; ' +
-        'margin-left:0; color:#666">\n' +
-        "---------- Forwarded message ---------<br>" +
-        fwdStr +
-        "\n</div>";
-
-      const combinedMsg = { ...msg, body: msg.body + divider };
-      rawBody = await buildRawMessage(account, combinedMsg);
-    } else {
-      rawBody = await buildRawMessage(account, msg);
-    }
-  } else {
-    rawBody = await buildRawMessage(account, msg);
-
-    if (msg.inReplyTo) {
-      try {
-        const refRes = await gmail.users.messages.get({
-          userId: "me",
-          id: msg.inReplyTo,
-          format: "minimal",
-        });
-        threadId = refRes.data.threadId ?? undefined;
-      } catch {
-        /* proceed without threading */
-      }
-    }
-  }
-
-  const sendRes = await gmail.users.messages.send({
-    userId: "me",
-    requestBody: {
-      raw: rawBody.raw,
-      threadId,
-    },
-  });
-
-  const messageId = sendRes.data.id;
-  return { id: messageId ?? "", ...gmailMessageWebLink(account, messageId) };
+export async function resolveDraftId(gmail: gmail_v1.Gmail, messageId: string): Promise<string> {
+  let pageToken: string | undefined;
+  do {
+    const response = await gmail.users.drafts.list({ userId: "me", pageToken });
+    const draft = response.data.drafts?.find((entry) => entry.message?.id === messageId);
+    if (draft?.id) return draft.id;
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  throw new Error(`draft not found: ${messageId}`);
 }
 
-export async function saveDraft(
-  clients: GmailClientFactory,
-  account: AccountRecord,
-  msg: SendInput,
-): Promise<EmailReference> {
-  const { gmail } = clients.get(account);
-  const { raw } = await buildRawMessage(account, msg);
-
-  let threadId: string | undefined;
-  if (msg.inReplyTo) {
-    try {
-      const refRes = await gmail.users.messages.get({
-        userId: "me",
-        id: msg.inReplyTo,
-        format: "minimal",
-      });
-      threadId = refRes.data.threadId ?? undefined;
-    } catch {
-      /* proceed without threading */
-    }
-  }
-
-  const draftRes = await gmail.users.drafts.create({
-    userId: "me",
-    requestBody: {
-      message: { raw, threadId },
-    },
-  });
-
-  const messageId = draftRes.data.message?.id;
-  return {
-    id: messageId ?? draftRes.data.id ?? "",
-    ...gmailMessageWebLink(account, messageId),
-  };
+async function prepareMessage(gmail: gmail_v1.Gmail, account: AccountRecord, msg: SendInput) {
+  const referenceId = msg.forwardMessageId || msg.inReplyTo;
+  if (!referenceId) return buildRawMessage(account, msg);
+  const response = await gmail.users.messages.get({ userId: "me", id: referenceId, format: "raw" });
+  if (!response.data.raw) throw new Error(`reference message not found: ${referenceId}`);
+  const parsed = await simpleParser(Buffer.from(response.data.raw, "base64url"), { skipImageLinks: true });
+  const result = await buildRawMessage(account, msg, undefined, parsed);
+  return { ...result, threadId: msg.forwardMessageId ? undefined : response.data.threadId ?? undefined };
 }
 
-export async function updateDraft(
-  clients: GmailClientFactory,
-  account: AccountRecord,
-  id: string,
-  update: DraftUpdateInput,
-): Promise<EmailReference> {
+function messageReference(account: AccountRecord, id: string | null | undefined): EmailReference {
+  if (!id) throw new Error("Gmail mutation succeeded but response has no message ID");
+  return { id, ...gmailMessageWebLink(account, id) };
+}
+
+export async function sendEmail(clients: GmailClientFactory, account: AccountRecord, msg: SendInput): Promise<EmailReference> {
   const { gmail } = clients.get(account);
+  const message = await prepareMessage(gmail, account, msg);
+  const response = await gmail.users.messages.send({ userId: "me", requestBody: message });
+  return messageReference(account, response.data.id);
+}
 
-  const draftRes = await gmail.users.drafts.get({
-    userId: "me",
-    id,
-    format: "raw",
-  });
+export async function saveDraft(clients: GmailClientFactory, account: AccountRecord, msg: SendInput): Promise<EmailReference> {
+  const { gmail } = clients.get(account);
+  const message = await prepareMessage(gmail, account, msg);
+  const response = await gmail.users.drafts.create({ userId: "me", requestBody: { message } });
+  return messageReference(account, response.data.message?.id);
+}
 
-  const existingMessage = draftRes.data.message;
-  if (!existingMessage?.raw) {
-    throw new Error(`draft not found: ${id}`);
-  }
-
-  const existingHeaders = existingMessage.payload?.headers ?? [];
-  const origSubject = findHeader(existingHeaders, "Subject") ?? "";
-
-  const rawStr = Buffer.from(
-    existingMessage.raw.replace(/-/g, "+").replace(/_/g, "/"),
-    "base64",
-  ).toString("utf-8");
-
-  // Extract existing To/CC recipients from headers
-  const existingTo = update.to ?? mapHeaderAddr(findHeader(existingHeaders, "To"));
-  const existingCc = update.cc ?? mapHeaderAddr(findHeader(existingHeaders, "Cc"));
-  const existingBcc = update.bcc ?? mapHeaderAddr(findHeader(existingHeaders, "Bcc"));
-
-  const { raw } = await buildRawMessage(account, {
-    to: existingTo,
-    subject: update.subject ?? origSubject,
-    body: update.body ?? "",
-    isHtml: update.isHtml,
-    inReplyTo: false,
-    cc: existingCc.length > 0 ? existingCc : undefined,
-    bcc: existingBcc.length > 0 ? existingBcc : undefined,
-  });
-
-  const updated = await gmail.users.drafts.update({
-    userId: "me",
-    id,
-    requestBody: {
-      message: {
-        raw,
-        threadId: existingMessage.threadId ?? undefined,
-      },
-    },
-  });
-
-  const messageId = updated.data.message?.id;
-  return {
-    id: messageId ?? updated.data.id ?? id,
-    ...gmailMessageWebLink(account, messageId),
-  };
+export async function updateDraft(clients: GmailClientFactory, account: AccountRecord, id: string, update: DraftUpdateInput): Promise<EmailReference> {
+  const { gmail } = clients.get(account);
+  const draftId = await resolveDraftId(gmail, id);
+  const response = await gmail.users.drafts.get({ userId: "me", id: draftId, format: "raw" });
+  if (!response.data.message?.raw) throw new Error(`draft not found: ${id}`);
+  const parsed = await simpleParser(Buffer.from(response.data.message.raw, "base64url"), { skipImageLinks: true });
+  const raw = await buildParsedDraft(parsed, update, parsed.attachments);
+  const updated = await gmail.users.drafts.update({ userId: "me", id: draftId, requestBody: { message: { raw: base64urlEncode(raw), threadId: response.data.message.threadId } } });
+  return messageReference(account, updated.data.message?.id);
 }
 
 export function isTrashDestination(destinationId: string): boolean {
@@ -233,217 +120,70 @@ export async function trashEmail(
   return { id: messageId, ...gmailMessageWebLink(account, messageId) };
 }
 
-export async function sendDraft(
-  clients: GmailClientFactory,
-  account: AccountRecord,
-  id: string,
-): Promise<EmailReference> {
+export async function sendDraft(clients: GmailClientFactory, account: AccountRecord, id: string): Promise<EmailReference> {
   const { gmail } = clients.get(account);
-  const res = await gmail.users.drafts.send({
-    userId: "me",
-    requestBody: { id },
-  });
-  const messageId = res.data.id;
-  return {
-    id: messageId ?? id,
-    ...gmailMessageWebLink(account, messageId),
+  const draftId = await resolveDraftId(gmail, id);
+  const response = await gmail.users.drafts.send({ userId: "me", requestBody: { id: draftId } });
+  return messageReference(account, response.data.id);
+}
+
+async function attachmentParts(gmail: gmail_v1.Gmail, messageId: string) {
+  const response = await gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
+  const parts: gmail_v1.Schema$MessagePart[] = [];
+  const visit = (part: gmail_v1.Schema$MessagePart) => {
+    if (part.body?.attachmentId) parts.push(part);
+    for (const child of part.parts ?? []) visit(child);
   };
+  if (response.data.payload) visit(response.data.payload);
+  return parts;
 }
 
-export async function addAttachmentToDraft(
-  clients: GmailClientFactory,
-  account: AccountRecord,
-  draftId: string,
-  name: string,
-  contentBytes: string,
-  contentType?: string,
-): Promise<{
-  id: string;
-  attachment: { id: string; name: string; contentType?: string };
-}> {
+async function attachmentBytes(gmail: gmail_v1.Gmail, messageId: string, attachmentId: string): Promise<Buffer> {
+  const response = await gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
+  if (response.data.data == null) throw new Error(`attachment data missing: ${attachmentId}`);
+  return Buffer.from(response.data.data, "base64url");
+}
+
+export async function addAttachmentToDraft(clients: GmailClientFactory, account: AccountRecord, messageId: string, name: string, contentBytes: string, contentType = "application/octet-stream") {
   const { gmail } = clients.get(account);
-
-  const draftRes = await gmail.users.drafts.get({
-    userId: "me",
-    id: draftId,
-    format: "raw",
-  });
-
-  const existingMessage = draftRes.data.message;
-  if (!existingMessage?.raw) {
-    throw new Error(`draft not found: ${draftId}`);
+  const draftId = await resolveDraftId(gmail, messageId);
+  const response = await gmail.users.drafts.get({ userId: "me", id: draftId, format: "raw" });
+  if (!response.data.message?.raw) throw new Error(`draft not found: ${messageId}`);
+  const parsed = await simpleParser(Buffer.from(response.data.message.raw, "base64url"), { skipImageLinks: true });
+  const bytes = Buffer.from(contentBytes, "base64");
+  const ordinal = parsed.attachments.filter((attachment) => attachment.filename === name && attachment.contentType === contentType && attachment.content.equals(bytes)).length;
+  const added = { filename: name, content: bytes, contentType, contentDisposition: "attachment" } as typeof parsed.attachments[number];
+  const raw = await buildParsedDraft(parsed, {}, [...parsed.attachments, added]);
+  const updated = await gmail.users.drafts.update({ userId: "me", id: draftId, requestBody: { message: { raw: base64urlEncode(raw), threadId: response.data.message.threadId } } });
+  const reference = messageReference(account, updated.data.message?.id);
+  let matching = 0;
+  for (const part of await attachmentParts(gmail, reference.id)) {
+    if (part.filename !== name || part.mimeType !== contentType) continue;
+    const id = part.body!.attachmentId!;
+    if ((await attachmentBytes(gmail, reference.id, id)).equals(bytes) && matching++ === ordinal) return { id: reference.id, attachment: { id, name, contentType } };
   }
-
-  const rawStr = Buffer.from(
-    existingMessage.raw.replace(/-/g, "+").replace(/_/g, "/"),
-    "base64",
-  ).toString("utf-8");
-
-  const newRawStr = await new Promise<string>((resolve, reject) => {
-    const mc = new MailComposer({
-      raw: rawStr,
-      attachments: [
-        {
-          filename: name,
-          content: Buffer.from(contentBytes, "base64"),
-          contentType: contentType ?? "application/octet-stream",
-        },
-      ],
-    });
-    mc.compile().build((err: Error | null, buf: Buffer) => {
-      if (err) reject(err);
-      else resolve(buf.toString("utf-8"));
-    });
-  });
-
-  const updated = await gmail.users.drafts.update({
-    userId: "me",
-    id: draftId,
-    requestBody: {
-      message: {
-        raw: base64urlEncode(Buffer.from(newRawStr, "utf-8")),
-        threadId: existingMessage.threadId ?? undefined,
-      },
-    },
-  });
-
-  return {
-    id: updated.data.message?.id ?? updated.data.id ?? draftId,
-    attachment: {
-      id: randomUUID(),
-      name,
-      contentType: contentType ?? "application/octet-stream",
-    },
-  };
+  throw new Error(`Gmail draft ${reference.id} was updated but added attachment is not readable`);
 }
 
-export async function removeAttachmentFromDraft(
-  clients: GmailClientFactory,
-  account: AccountRecord,
-  draftId: string,
-  attachmentId: string,
-): Promise<void> {
+export async function removeAttachmentsFromDraft(clients: GmailClientFactory, account: AccountRecord, messageId: string, attachmentIds: string[]): Promise<EmailReference> {
   const { gmail } = clients.get(account);
-
-  // Get the draft with full payload to find the attachment part
-  const fullDraft = await gmail.users.drafts.get({
-    userId: "me",
-    id: draftId,
-    format: "full",
-  });
-
-  const message = fullDraft.data.message;
-  if (!message?.payload) {
-    throw new Error(`draft not found: ${draftId}`);
+  const draftId = await resolveDraftId(gmail, messageId);
+  const response = await gmail.users.drafts.get({ userId: "me", id: draftId, format: "raw" });
+  if (!response.data.message?.raw) throw new Error(`draft not found: ${messageId}`);
+  const parsed = await simpleParser(Buffer.from(response.data.message.raw, "base64url"), { skipImageLinks: true });
+  const retained = [...parsed.attachments];
+  const parts = await attachmentParts(gmail, messageId);
+  for (const id of new Set(attachmentIds)) {
+    const part = parts.find((entry) => entry.body?.attachmentId === id);
+    if (!part) throw new Error(`attachment not found: ${id}`);
+    const bytes = await attachmentBytes(gmail, messageId, id);
+    const index = matchingAttachmentIndex(retained, part.filename ?? undefined, part.mimeType ?? undefined, bytes);
+    if (index < 0) throw new Error(`cannot map attachment MIME part: ${id}`);
+    retained.splice(index, 1);
   }
-
-  // Walk the payload parts to find the attachment with matching attachmentId
-  let targetFilename: string | undefined;
-  let targetMimeType: string | undefined;
-
-  function findAttachment(parts: any[] | undefined): boolean {
-    if (!parts) return false;
-    for (const part of parts) {
-      if (part.body?.attachmentId === attachmentId) {
-        targetFilename = part.filename ?? undefined;
-        targetMimeType = part.mimeType ?? undefined;
-        return true;
-      }
-      if (part.parts && findAttachment(part.parts)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  if (!findAttachment(message.payload.parts)) {
-    throw new Error(`attachment not found: ${attachmentId}`);
-  }
-
-  // Get the raw message
-  const rawDraft = await gmail.users.drafts.get({
-    userId: "me",
-    id: draftId,
-    format: "raw",
-  });
-
-  const rawStr = Buffer.from(
-    rawDraft.data.message!.raw!.replace(/-/g, "+").replace(/_/g, "/"),
-    "base64",
-  ).toString("utf-8");
-
-  // Parse and remove the attachment from the MIME message
-  const newRawStr = removeMimeAttachment(rawStr, targetFilename, targetMimeType);
-
-  // Update the draft with the modified message
-  await gmail.users.drafts.update({
-    userId: "me",
-    id: draftId,
-    requestBody: {
-      message: {
-        raw: base64urlEncode(Buffer.from(newRawStr, "utf-8")),
-        threadId: message.threadId ?? undefined,
-      },
-    },
-  });
-}
-
-/**
- * Remove a specific attachment from a raw MIME message.
- * Uses boundary-based parsing to identify and remove the matching part.
- */
-function removeMimeAttachment(
-  rawMime: string,
-  targetFilename: string | undefined,
-  targetMimeType: string | undefined,
-): string {
-  // Extract boundary from Content-Type header
-  const boundaryMatch = rawMime.match(/boundary="?([^";]+)"?/i);
-  if (!boundaryMatch) {
-    // Not a multipart message, can't remove attachment
-    return rawMime;
-  }
-
-  const boundary = boundaryMatch[1];
-  const delimiter = `--${boundary}`;
-
-  // Split by boundary
-  const parts = rawMime.split(delimiter);
-
-  // Filter out the part matching the target attachment
-  const filtered = parts.filter((part) => {
-    if (!part.trim() || part.trim() === "--") {
-      return true; // Keep preamble and closing delimiter
-    }
-
-    // Check if this part is the target attachment
-    const contentDispMatch = targetFilename &&
-      part.match(new RegExp(`Content-Disposition:.*?filename="?${escapeRegex(targetFilename)}"?`, "i"));
-
-    const contentTypeMatch = targetMimeType &&
-      part.match(new RegExp(`Content-Type:\s*${escapeRegex(targetMimeType)}`, "i"));
-
-    // If both filename and mime type are specified, both must match
-    // If only one is specified, that one must match
-    if (targetFilename && targetMimeType) {
-      return !(contentDispMatch && contentTypeMatch);
-    } else if (targetFilename) {
-      return !contentDispMatch;
-    } else if (targetMimeType) {
-      return !contentTypeMatch;
-    }
-
-    return true; // No target specified, keep all parts
-  });
-
-  return filtered.join(delimiter);
-}
-
-/**
- * Escape special regex characters in a string
- */
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const raw = await buildParsedDraft(parsed, {}, retained);
+  const updated = await gmail.users.drafts.update({ userId: "me", id: draftId, requestBody: { message: { raw: base64urlEncode(raw), threadId: response.data.message.threadId } } });
+  return messageReference(account, updated.data.message?.id);
 }
 
 export async function markRead(

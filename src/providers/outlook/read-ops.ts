@@ -1,7 +1,5 @@
 import { ResponseType } from "@microsoft/microsoft-graph-client";
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join as pathJoin } from "node:path";
+import { writeAttachmentFile } from "../shared/attachment-files.js";
 import type { Client } from "@microsoft/microsoft-graph-client";
 
 import type { AccountRecord } from "../../store/account-store.js";
@@ -475,9 +473,7 @@ export async function readAttachment(
     data = await getAttachmentValue(client, messageId, attachmentId, false);
   }
 
-  // Write to temp file with original name
-  const outPath = pathJoin(tmpdir(), att.name);
-  writeFileSync(outPath, Buffer.from(data));
+  const outPath = await writeAttachmentFile(att.name, Buffer.from(data));
 
   let webLinkFields;
   try {

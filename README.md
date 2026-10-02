@@ -3,6 +3,19 @@
 A **Model Context Protocol** server that lets an agent operate any of the user's
 inboxes through a single, unified tool surface.
 
+## Unreleased correctness fixes
+
+- Attachment downloads use distinct private temporary directories and files; email-controlled filenames cannot overwrite files or escape the download directory. Consumers may remove their downloaded file's directory when finished.
+- Provider-read timeouts cannot claim new emails or initialize polling checkpoints after the caller has timed out. Successful reads commit under the existing store lock; this is not network-level exactly-once delivery. Gmail polling follows remaining API pages.
+- Gmail draft references remain message IDs; draft-container lookup is internal. Draft edits and attachment mutations preserve parsed MIME content and return current provider IDs. Bulk removal validates original attachment IDs before rewriting; IMAP replacements are readable before the old draft is deleted. A post-replacement deletion failure reports both IDs.
+- Replies preserve RFC threading and decoded quoted history; reply-all excludes inherited self/Bcc addresses. Forwards retain decoded content and attachments. Gmail API MIME retains Bcc recipients; IMAP SMTP uses an explicit To/Cc/Bcc envelope without a wire Bcc header.
+- Settings are patched against the latest locked account state, preserving refreshed tokens and checkpoints. `style: null` clears style; omitted settings remain unchanged. Closed IMAP connections reconnect on the next operation without replaying failed writes.
+- HTTP accepts only `/mcp` (query strings allowed), caps POST bodies at 16 MiB, and reports malformed JSON, missing sessions and expired sessions with recoverable protocol errors. HTTP is for local/private use or an authenticated reverse proxy, **not public unauthenticated exposure**; see [hosting](docs/hosting.md). Tool allow/deny lists and encryption-at-rest are not authentication.
+
+Verification: 326 tests passed, TypeScript checks and the Node 20-targeted build passed, and isolated actual-MCP HTTP and MIME/SMTP serialization smoke checks passed. Live no-send draft checks passed on Outlook for combined body edits, bulk attachment removal/addition, downloads, and move/trash. Gmail draft edits, Bcc preservation, additions, reply/forward content, downloads, and move/trash were exercised. No email was sent; test drafts were trashed and local fixtures removed.
+
+Known live gaps: Gmail attachment tokens change between reads of an unchanged draft, causing bulk removal to reject a previously returned ID and download metadata lookup to fall back to `attachment`. Gmail readback also omits a text attachment when it is mistaken for a body and misparses quoted recipient names containing commas. These defects remain unresolved. Live IMAP checks were blocked by account authentication; live SMTP sending was not attempted.
+
 > **v0.7.27** — Outlook message links are now normalized to canonical web URLs,
 > preventing malformed or inconsistently encoded links in email results.
 >

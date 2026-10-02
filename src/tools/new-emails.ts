@@ -39,6 +39,7 @@ interface Candidate {
 interface AccountCandidates {
   account: AccountRecord;
   candidates: Candidate[];
+  proposedCheckpoint?: NewEmailCheckpoint;
 }
 
 interface NewEmailOutput {
@@ -61,6 +62,12 @@ interface NewEmailOutput {
   bodyFormat: "markdown";
   bodyTruncated: boolean;
   bodyOriginalLength: number;
+}
+
+interface HydratedCandidate {
+  candidate: Candidate;
+  email: NewEmailOutput;
+  fullId: string;
 }
 
 export function registerNewEmailTool(
@@ -137,8 +144,9 @@ export function registerNewEmailTool(
           const result = await withAccountPollTimeout(
             account.email,
             "collect new-email candidates",
-            collectCandidatesForAccount(store, provider, account, logger),
+            collectCandidatesForAccount(provider, account, logger),
           );
+          await commitInitialCheckpoint(store, result, logger);
           const selected = oldestCandidatesFirst(result.candidates).slice(0, limit);
           logger.debug("get-new-emails", "selected", {
             account: result.account.email,
@@ -148,13 +156,14 @@ export function registerNewEmailTool(
             selectedReceivedAt: selected.map((candidate) => candidate.timestamp),
             limit,
           });
-          const emails = limit === 0
+          const hydrated = limit === 0
             ? []
             : await withAccountPollTimeout(
                 result.account.email,
                 "hydrate new emails",
-                hydrateAndAdvance(store, provider, result.account, selected, logger),
+                hydrateCandidates(provider, result.account, selected, logger),
               );
+          const emails = await claimHydratedCandidates(store, result.account, hydrated, logger);
           const data = { count: emails.length, emails, errors: [] };
           logger.debug("get-new-emails", "end", {
             account: result.account.email,
@@ -193,8 +202,9 @@ export function registerNewEmailTool(
             const result = await withAccountPollTimeout(
               account.email,
               "collect new-email candidates",
-              collectCandidatesForAccount(store, provider, account, logger),
+              collectCandidatesForAccount(provider, account, logger),
             );
+            await commitInitialCheckpoint(store, result, logger);
             return {
               status: "ok" as const,
               account: result.account,
@@ -248,13 +258,14 @@ export function registerNewEmailTool(
             const account = accountsByEmail.get(email);
             if (!provider || !account) return { status: "ok" as const, emails: [] };
             try {
+              const hydrated = await withAccountPollTimeout(
+                email,
+                "hydrate new emails",
+                hydrateCandidates(provider, account, accountCandidates, logger),
+              );
               return {
                 status: "ok" as const,
-                emails: await withAccountPollTimeout(
-                  email,
-                  "hydrate new emails",
-                  hydrateAndAdvance(store, provider, account, accountCandidates, logger),
-                ),
+                emails: await claimHydratedCandidates(store, account, hydrated, logger),
               };
             } catch (err) {
               const message = errMsg(err);
@@ -290,20 +301,19 @@ export function registerNewEmailTool(
 }
 
 async function collectCandidatesForAccount(
-  store: AccountStore,
   provider: EmailProvider,
   account: AccountRecord,
   logger: Logger,
 ): Promise<AccountCandidates> {
   const checkpoint = normalizeCheckpoint(account.newEmailCheckpoint);
   if (!checkpoint) {
-    await initializeCheckpoint(store, provider, account, logger);
+    const proposedCheckpoint = await proposeInitialCheckpoint(provider, account);
     logger.debug("get-new-emails", "candidatesCollected", {
       account: account.email,
       initialized: true,
       candidateCount: 0,
     });
-    return { account, candidates: [] };
+    return { account, candidates: [], proposedCheckpoint };
   }
 
   const deliveredAtCheckpoint = new Set(checkpoint.deliveredIdsAtReceivedAt ?? []);
@@ -351,12 +361,10 @@ async function collectCandidatesForAccount(
   return { account, candidates };
 }
 
-async function initializeCheckpoint(
-  store: AccountStore,
+async function proposeInitialCheckpoint(
   provider: EmailProvider,
   account: AccountRecord,
-  logger: Logger,
-): Promise<void> {
+): Promise<NewEmailCheckpoint> {
   const { items } = await provider.listEmails(account, {
     folder: "inbox",
     limit: PAGE_SIZE,
@@ -370,24 +378,31 @@ async function initializeCheckpoint(
     .filter((item) => effectiveReceivedAt(item.receivedAt) === receivedAt)
     .map((item) => item.id);
 
-  await store.updateNewEmailCheckpoint(account.email, {
-    receivedAt,
-    deliveredIdsAtReceivedAt,
-  });
+  return { receivedAt, deliveredIdsAtReceivedAt };
+}
+
+// Only the caller that wins the provider timeout may persist its baseline.
+async function commitInitialCheckpoint(
+  store: AccountStore,
+  result: AccountCandidates,
+  logger: Logger,
+): Promise<void> {
+  if (!result.proposedCheckpoint) return;
+  const { receivedAt, deliveredIdsAtReceivedAt } = result.proposedCheckpoint;
+  await store.updateNewEmailCheckpoint(result.account.email, result.proposedCheckpoint);
   logger.debug("get-new-emails", "checkpointInitialized", {
-    account: account.email,
+    account: result.account.email,
     receivedAt,
-    deliveredIdCount: deliveredIdsAtReceivedAt.length,
+    deliveredIdCount: deliveredIdsAtReceivedAt?.length ?? 0,
   });
 }
 
-async function hydrateAndAdvance(
-  store: AccountStore,
+async function hydrateCandidates(
   provider: EmailProvider,
   account: AccountRecord,
   selected: Candidate[],
   logger: Logger,
-): Promise<NewEmailOutput[]> {
+): Promise<HydratedCandidate[]> {
   if (selected.length === 0) {
     logger.debug("get-new-emails", "hydrated", {
       account: account.email,
@@ -398,11 +413,7 @@ async function hydrateAndAdvance(
     return [];
   }
 
-  const hydrated: Array<{
-    candidate: Candidate;
-    email: NewEmailOutput;
-    fullId: string;
-  }> = [];
+  const hydrated: HydratedCandidate[] = [];
 
   for (const candidate of selected) {
     const full = await provider.readEmail(account, candidate.summary.id);
@@ -413,16 +424,27 @@ async function hydrateAndAdvance(
     });
   }
 
-  const claims: NewEmailClaimCandidate[] = hydrated.map(({ candidate, fullId }) => ({
-    summaryId: candidate.summary.id,
-    receivedAt: candidate.timestamp,
-    ids: [candidate.summary.id, fullId],
-  }));
   logger.debug("get-new-emails", "hydrated", {
     account: account.email,
     selectedCount: selected.length,
     hydratedCount: hydrated.length,
   });
+  return hydrated;
+}
+
+// Durable claims must be awaited, never raced against a provider timeout.
+async function claimHydratedCandidates(
+  store: AccountStore,
+  account: AccountRecord,
+  hydrated: HydratedCandidate[],
+  logger: Logger,
+): Promise<NewEmailOutput[]> {
+  if (hydrated.length === 0) return [];
+  const claims: NewEmailClaimCandidate[] = hydrated.map(({ candidate, fullId }) => ({
+    summaryId: candidate.summary.id,
+    receivedAt: candidate.timestamp,
+    ids: [candidate.summary.id, fullId],
+  }));
   const claimed = new Set(await store.claimNewEmails(account.email, claims));
   logger.debug("get-new-emails", "claimed", {
     account: account.email,

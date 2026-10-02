@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { randomUUID } from "node:crypto";
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse, type Server as HttpServer } from "node:http";
 
 import { AccountStore } from "./store/account-store.js";
 import { resolveDataDir } from "./store/crypto.js";
@@ -118,72 +118,143 @@ async function handleGmailOAuthCallback(
   );
 }
 
-async function startHttp(
+const MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024;
+
+function sendRpcError(res: ServerResponse, status: number, code: number, message: string): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }));
+}
+
+// Event-based reading lets rejected requests drain without retaining their remaining bytes.
+function readPostBody(req: IncomingMessage, res: ServerResponse): Promise<{ body: unknown } | undefined> {
+  return new Promise((resolve, reject) => {
+    let chunks: Buffer[] = [];
+    let size = 0;
+    let rejected = false;
+    req.on("data", (chunk: Buffer) => {
+      if (rejected) return;
+      size += chunk.length;
+      if (size > MAX_HTTP_BODY_BYTES) {
+        rejected = true;
+        chunks = [];
+        sendRpcError(res, 413, -32000, "Request body too large");
+        resolve(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.once("end", () => {
+      if (rejected) return;
+      try {
+        resolve({ body: JSON.parse(Buffer.concat(chunks, size).toString("utf8")) });
+      } catch {
+        sendRpcError(res, 400, -32700, "Parse error");
+        resolve(undefined);
+      }
+    });
+    req.once("error", reject);
+    req.once("aborted", () => reject(new Error("HTTP request aborted")));
+  });
+}
+
+export async function startHttp(
   createServer: () => McpServer,
   registry: Registry,
   host: string,
   port: number,
-): Promise<void> {
-  // One McpServer + transport per session, keyed by Mcp-Session-Id header.
+): Promise<HttpServer> {
   const sessions = new Map<string, HttpSession>();
-
   const http = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
+    let allocated: HttpSession | undefined;
     try {
-      if (!req.url) {
-        res.statusCode = 404;
-        res.end("not found");
-        return;
-      }
-
-      const pathname = new URL(req.url, requestBaseUrl(req)).pathname;
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
       if (req.method === "GET" && pathname === DEFAULT_GMAIL_OAUTH_CALLBACK_PATH) {
         await handleGmailOAuthCallback(req, res, registry);
         return;
       }
-
-      if (!req.url.startsWith("/mcp")) {
-        res.statusCode = 404;
+      if (pathname !== "/mcp") {
+        res.writeHead(404);
         res.end("not found");
+        req.resume();
         return;
       }
-      const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? undefined;
-      let session = sessionId ? sessions.get(sessionId) : undefined;
-
+      if (!["GET", "POST", "DELETE"].includes(req.method ?? "")) {
+        res.writeHead(405, { Allow: "GET, POST, DELETE" });
+        res.end("method not allowed");
+        req.resume();
+        return;
+      }
+      const sessionId = firstHeader(req.headers["mcp-session-id"]);
+      let session = sessionId !== undefined ? sessions.get(sessionId) : undefined;
+      if (sessionId !== undefined && !session) {
+        sendRpcError(res, 404, -32001, "Session not found");
+        req.resume();
+        return;
+      }
+      let body: unknown;
+      if (req.method === "POST") {
+        const parsed = await readPostBody(req, res);
+        if (!parsed) return;
+        body = parsed.body;
+      }
       if (!session) {
+        // Only recognize intent here; the SDK owns initialization schema validation.
+        if (req.method !== "POST" || !body || typeof body !== "object" ||
+            Array.isArray(body) || !("method" in body) || body.method !== "initialize") {
+          sendRpcError(res, 400, -32000, "Initialization required");
+          req.resume();
+          return;
+        }
         const server = createServer();
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (sid: string) => {
             sessions.set(sid, { transport, server });
-            transport.onclose = () => {
-              if (transport.sessionId) sessions.delete(transport.sessionId);
-            };
+          },
+          onsessionclosed: (sid: string) => {
+            sessions.delete(sid);
           },
         });
+        allocated = { transport, server };
         await server.connect(transport);
-        session = { transport, server };
-      }
-
-      // Buffer body for POST / DELETE
-      let body: unknown = undefined;
-      if (req.method === "POST" || req.method === "DELETE") {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk as Buffer);
-        const raw = Buffer.concat(chunks).toString("utf8");
-        body = raw ? JSON.parse(raw) : undefined;
+        session = allocated;
       }
       await session.transport.handleRequest(req, res, body);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("[hypermail-mcp] http error:", err);
+    } catch {
+      // Never log request bodies or provider credentials from arbitrary error objects.
+      console.error("[hypermail-mcp] HTTP request failed");
       if (!res.headersSent) {
-        res.statusCode = 500;
+        res.writeHead(500);
         res.end("internal error");
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+    } finally {
+      if (allocated && (!allocated.server.server.getClientVersion() || res.statusCode >= 400)) {
+        if (allocated.transport.sessionId) sessions.delete(allocated.transport.sessionId);
+        try {
+          await allocated.server.close();
+        } catch {
+          console.error("[hypermail-mcp] Failed to close rejected HTTP initialization");
+        }
       }
     }
   });
-
-  await new Promise<void>((resolve) => http.listen(port, host, resolve));
-  // eslint-disable-next-line no-console
+  http.on("close", () => {
+    for (const session of sessions.values()) {
+      void session.server.close().catch(() => {
+        console.error("[hypermail-mcp] Failed to close HTTP session");
+      });
+    }
+    sessions.clear();
+  });
+  await new Promise<void>((resolve, reject) => {
+    http.once("error", reject);
+    http.listen(port, host, () => {
+      http.off("error", reject);
+      resolve();
+    });
+  });
   console.error(`[hypermail-mcp] listening on http://${host}:${port}/mcp`);
+  return http;
 }

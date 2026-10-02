@@ -39,7 +39,7 @@ import {
   trashEmail,
   sendDraft,
   addAttachmentToDraft,
-  removeAttachmentFromDraft,
+  removeAttachmentsFromDraft,
   markRead,
 } from "./write-ops.js";
 import {
@@ -124,12 +124,12 @@ export class ImapProvider implements EmailProvider {
     return addAttachmentToDraft(this.clients, account, draftId, name, contentBytes, contentType);
   }
 
-  async removeAttachmentFromDraft(
+  async removeAttachmentsFromDraft(
     account: AccountRecord,
     draftId: string,
-    attachmentId: string,
-  ): Promise<void> {
-    return removeAttachmentFromDraft(this.clients, account, draftId, attachmentId);
+    attachmentIds: string[],
+  ): Promise<EmailReference> {
+    return removeAttachmentsFromDraft(this.clients, account, draftId, attachmentIds);
   }
 
   // ---------- organize ----------

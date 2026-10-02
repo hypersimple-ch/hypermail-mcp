@@ -29,7 +29,7 @@ import {
   addAttachmentToDraft,
   markRead,
   moveEmail,
-  removeAttachmentFromDraft,
+  removeAttachmentsFromDraft,
   sendDraft,
   sendOrSave,
   updateDraft,
@@ -222,12 +222,12 @@ export class OutlookProvider implements EmailProvider {
     );
   }
 
-  async removeAttachmentFromDraft(
+  async removeAttachmentsFromDraft(
     account: AccountRecord,
     draftId: string,
-    attachmentId: string,
-  ): Promise<void> {
-    return removeAttachmentFromDraft(this.clients.get(account), account, draftId, attachmentId);
+    attachmentIds: string[],
+  ): Promise<EmailReference> {
+    return removeAttachmentsFromDraft(this.clients.get(account), account, draftId, attachmentIds);
   }
 
   async markRead(account: AccountRecord, id: string, isRead: boolean): Promise<EmailReference> {

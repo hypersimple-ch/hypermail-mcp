@@ -263,13 +263,13 @@ export interface EmailProvider {
   ): Promise<{ id: string; attachment: { id: string; name: string; contentType?: string } }>;
 
   /**
-   * Remove a file attachment from an existing draft message.
+   * Remove selected file attachments in one draft replacement.
    */
-  removeAttachmentFromDraft(
+  removeAttachmentsFromDraft(
     account: AccountRecord,
     draftId: string,
-    attachmentId: string,
-  ): Promise<void>;
+    attachmentIds: string[],
+  ): Promise<EmailReference>;
 
   /** Mark a message as read (isRead=true) or unread (isRead=false). */
   markRead(

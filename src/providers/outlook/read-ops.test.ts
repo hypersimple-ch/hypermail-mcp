@@ -1,5 +1,7 @@
 import type { Client } from "@microsoft/microsoft-graph-client";
-import { describe, expect, it } from "vitest";
+import { readFile, rm } from "node:fs/promises";
+import { basename, dirname } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 import type { AccountRecord } from "../../store/account-store.js";
 import {
@@ -9,6 +11,13 @@ import {
   readEmail,
   searchEmails,
 } from "./read-ops.js";
+
+const downloadedPaths: string[] = [];
+afterEach(async () => {
+  await Promise.all(downloadedPaths.splice(0).map((path) =>
+    rm(dirname(path), { recursive: true, force: true }),
+  ));
+});
 
 interface GraphCall {
   endpoint: string;
@@ -375,6 +384,7 @@ describe("Outlook read operations", () => {
     });
 
     const res = await readAttachment(client, account(), messageId, attachmentId);
+    downloadedPaths.push(res.path);
 
     expect(res).toEqual(expect.objectContaining({
       name: "file.pdf",
@@ -386,6 +396,33 @@ describe("Outlook read operations", () => {
       { Prefer: OUTLOOK_IMMUTABLE_ID_PREFER },
       {},
     ]);
+  });
+
+  it("isolates repeated untrusted attachment names while preserving metadata and bytes", async () => {
+    const name = "../../victim.pdf";
+    const messageId = "message";
+    const metadataEndpoint = `/me/messages/${messageId}/attachments/att`;
+    const bytes = new Uint8Array([0, 1, 255]);
+    const { client } = fakeClient({
+      [metadataEndpoint]: Array.from({ length: 2 }, () => ({
+        result: { name, contentType: "application/pdf" },
+      })),
+      [`${metadataEndpoint}/$value`]: Array.from({ length: 2 }, () => ({ result: bytes.buffer })),
+      [`/me/messages/${messageId}`]: Array.from({ length: 2 }, () => ({
+        result: { id: messageId, webLink: "https://outlook.example/message" },
+      })),
+    });
+    const first = await readAttachment(client, account(), messageId, "att");
+    downloadedPaths.push(first.path);
+    const second = await readAttachment(client, account(), messageId, "att");
+    downloadedPaths.push(second.path);
+    expect(first).toEqual(expect.objectContaining({
+      name, contentType: "application/pdf", webUrl: "https://outlook.example/message",
+    }));
+    expect(basename(first.path)).toBe("attachment.pdf");
+    expect(dirname(first.path)).not.toBe(dirname(second.path));
+    expect(await readFile(first.path)).toEqual(Buffer.from(bytes));
+    expect(await readFile(second.path)).toEqual(Buffer.from(bytes));
   });
 
   it("builds query-only KQL without changing phrase search behavior", async () => {

@@ -1,12 +1,20 @@
 import { Readable } from "node:stream";
-import { unlink } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountRecord } from "../../store/account-store.js";
 import type { ImapClientFactory } from "./client.js";
 import { readAttachment, readEmail, searchEmails } from "./read-ops.js";
 import { IMAP_WEB_URL_UNAVAILABLE_REASON } from "./helpers.js";
+
+const downloadedPaths: string[] = [];
+afterEach(async () => {
+  await Promise.all(downloadedPaths.splice(0).map((path) =>
+    rm(dirname(path), { recursive: true, force: true }),
+  ));
+});
 
 const account: AccountRecord = {
   email: "user@example.com",
@@ -126,7 +134,7 @@ describe("IMAP search operations", () => {
                 type: "application/pdf",
                 part: "2",
                 disposition: "attachment",
-                dispositionParameters: { filename: "imap-link-test.pdf" },
+                dispositionParameters: { filename: "..\\imap-link-test.pdf" },
               },
             ],
           },
@@ -142,8 +150,16 @@ describe("IMAP search operations", () => {
     expect(full.webUrlUnavailableReason).toBe(IMAP_WEB_URL_UNAVAILABLE_REASON);
 
     const attachment = await readAttachment(clientsFor(client), account, "INBOX/5", "2");
+    downloadedPaths.push(attachment.path);
+    const repeated = await readAttachment(clientsFor(client), account, "INBOX/5", "2");
+    downloadedPaths.push(repeated.path);
+    expect(attachment.name).toBe("..\\imap-link-test.pdf");
+    expect(attachment.contentType).toBe("application/pdf");
+    expect(basename(attachment.path)).toBe("attachment.pdf");
+    expect(dirname(attachment.path)).not.toBe(dirname(repeated.path));
+    expect(await readFile(attachment.path, "utf8")).toBe("file");
+    expect(await readFile(repeated.path, "utf8")).toBe("file");
     expect(attachment.webUrlUnavailableReason).toBe(IMAP_WEB_URL_UNAVAILABLE_REASON);
     expect(attachment.webUrl).toBeUndefined();
-    await unlink(attachment.path);
   });
 });

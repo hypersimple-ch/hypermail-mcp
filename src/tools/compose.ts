@@ -195,8 +195,7 @@ export function registerComposeTools(
           "specified message, preserving the original content. " +
           "`inReplyTo` and `forwardMessageId` are mutually exclusive. " +
           "Returns the resulting message's shareable `webUrl` when available; " +
-          "recipients must have access to the mailbox to open it. " +
-          "Disabled in --read-only mode.",
+          "recipients must have access to the mailbox to open it.",
         inputSchema: sendEmailSchema,
         outputSchema: sendEmailOutputSchema,
       },
@@ -235,7 +234,7 @@ export function registerComposeTools(
           "duplicate signature blocks, no broken or missing inline images, " +
           "no malformed HTML, and no other formatting issues. Returns the " +
           "draft's shareable `webUrl` when available; recipients must have " +
-          "access to the mailbox to open it. Disabled in --read-only mode.",
+          "access to the mailbox to open it.",
         inputSchema: sendEmailSchema,
         outputSchema: draftEmailOutputSchema,
       },
@@ -255,6 +254,7 @@ export function registerComposeTools(
     edited: z.literal(true),
     ...emailReferenceOutputSchema.shape,
     draftHtml: z.string().optional(),
+    attachments: z.array(z.object({ id: z.string(), name: z.string(), contentType: z.string().optional(), size: z.number().optional() })).optional(),
   };
 
   if (shouldRegister("edit_draft", tools)) {
@@ -274,7 +274,7 @@ export function registerComposeTools(
           "Does not support changing `inReplyTo` or `forwardMessageId` — " +
           "those are set at creation time via `draft_email`. Returns the " +
           "draft's shareable `webUrl` when available; recipients must have " +
-          "access to the mailbox to open it. Disabled in --read-only mode.",
+          "access to the mailbox to open it.",
         inputSchema: editDraftSchema,
         outputSchema: editDraftOutputSchema,
       },
@@ -340,6 +340,10 @@ export function registerComposeTools(
 
           let currentId = a.id;
           let mutationReference: EmailReference = { id: currentId };
+          if (a.remove_attachments?.length) {
+            mutationReference = await provider.removeAttachmentsFromDraft(account, currentId, a.remove_attachments);
+            currentId = mutationReference.id;
+          }
           if (hasDraftUpdate) {
             const res = await provider.updateDraft(account, currentId, {
               to: a.to,
@@ -354,7 +358,6 @@ export function registerComposeTools(
           }
 
           // Handle new attachments
-          const newAttachmentIds: string[] = [];
           if (a.new_attachments && a.new_attachments.length > 0) {
             for (const att of a.new_attachments) {
               const fileData = readFileSync(att.filePath);
@@ -370,22 +373,9 @@ export function registerComposeTools(
               );
               currentId = attRes.id;
               mutationReference = { ...mutationReference, id: currentId };
-              newAttachmentIds.push(attRes.attachment.id);
             }
           }
 
-          // Handle attachment removal
-          const removedIds: string[] = [];
-          if (a.remove_attachments && a.remove_attachments.length > 0) {
-            for (const attId of a.remove_attachments) {
-              await provider.removeAttachmentFromDraft(
-                account,
-                currentId,
-                attId,
-              );
-              removedIds.push(attId);
-            }
-          }
 
           let draft;
           if (bodyExpectation) {
@@ -420,9 +410,11 @@ export function registerComposeTools(
           } else {
             try {
               draft = await provider.readEmail(account, currentId);
-            } catch {
-              // Attachment-only and recipient-only edits do not require body
-              // verification; return the mutation reference when readback fails.
+            } catch (error) {
+              if (a.new_attachments?.length || a.remove_attachments?.length) {
+                throw new Error(`Draft ${currentId} was changed but final attachment metadata could not be read: ${errMsg(error)}`);
+              }
+              // Recipient-only edits can still return their mutation reference.
               draft = undefined;
             }
           }
@@ -440,6 +432,7 @@ export function registerComposeTools(
             edited: true as const,
             ...reference,
             ...(draft ? { draftHtml: draft.bodyHtml ?? "" } : {}),
+            ...(draft ? { attachments: draft.attachments } : {}),
           };
           return ok(result, result);
         } catch (err) {
@@ -464,8 +457,7 @@ export function registerComposeTools(
           "Send an existing draft email by ID. " +
           "Use this with draft IDs returned by `draft_email` or `edit_draft`. " +
           "Returns the resulting message's shareable `webUrl` when available; " +
-          "recipients must have access to the mailbox to open it. " +
-          "Disabled in --read-only mode.",
+          "recipients must have access to the mailbox to open it.",
         inputSchema: {
           account: z.string().email(),
           id: z.string().min(1).describe("Draft message ID to send"),

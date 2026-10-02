@@ -79,8 +79,7 @@ export function registerFolderTools(
       {
         description:
           "Create a new mail folder. Creates under the root folder by default, " +
-          "or under the specified parent when `parentFolderId` is provided. " +
-          "Disabled in --read-only mode.",
+          "or under the specified parent when `parentFolderId` is provided.",
         inputSchema: z.object({
           account: z.string().email(),
           displayName: z
@@ -125,7 +124,7 @@ export function registerFolderTools(
       "delete_folder",
       {
         description:
-          "Delete a mail folder by ID. Disabled in --read-only mode.",
+          "Delete a mail folder by ID.",
         inputSchema: z.object({
           account: z.string().email(),
           folderId: z
@@ -160,7 +159,7 @@ export function registerFolderTools(
       "rename_folder",
       {
         description:
-          "Rename an existing mail folder. Disabled in --read-only mode.",
+          "Rename an existing mail folder.",
         inputSchema: z.object({
           account: z.string().email(),
           folderId: z

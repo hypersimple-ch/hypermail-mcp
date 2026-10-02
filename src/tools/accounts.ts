@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { promises as fs } from "node:fs";
 import { z } from "zod";
 
-import type { AccountStore } from "../store/account-store.js";
+import type { AccountRecord, AccountStore } from "../store/account-store.js";
 import type { Registry } from "../providers/registry.js";
 import type { ProviderId } from "../providers/types.js";
 import type { ResolvedTools } from "../config.js";
@@ -86,7 +86,7 @@ export function registerAccountTools(
         description:
           "Start adding an email account. For Outlook this returns a device code " +
           "the user must enter at the verification URL; then call `complete_add_account` " +
-          "with the returned `handle` to finalize. Disabled in --read-only mode.",
+          "with the returned `handle` to finalize.",
         inputSchema: z.object({
           provider: providerIdEnum.describe("Email backend. 'outlook' (Microsoft Graph) and 'imap' are fully implemented."),
           email: z
@@ -222,8 +222,7 @@ export function registerAccountTools(
         description:
           "Set signature (HTML snippet) and/or style preferences for an account. " +
           "Use `signaturePath` to load a signature from a file (useful for signatures with base64 images). " +
-          "`signature` and `signaturePath` are mutually exclusive. " +
-          "Disabled in --read-only mode.",
+          "`signature` and `signaturePath` are mutually exclusive.",
         inputSchema: z
           .object({
             account: z.string().email(),
@@ -250,6 +249,7 @@ export function registerAccountTools(
                 fontSize: z.string().optional(),
                 fontColor: z.string().optional(),
               })
+              .nullable()
               .optional()
               .describe(
                 "Font preferences applied to outgoing HTML emails. Pass null to clear.",
@@ -269,17 +269,19 @@ export function registerAccountTools(
           const acct = store.getAccount(args.account);
           if (!acct)
             return fail(`no account registered for "${args.account}"`);
-          let resolvedSignature: string | undefined = acct.signature;
-          if (args.signaturePath) {
-            resolvedSignature = await fs.readFile(args.signaturePath, "utf-8");
+          const patch: {
+            signature?: string | null;
+            style?: AccountRecord["style"] | null;
+          } = {};
+          if (args.signaturePath !== undefined) {
+            patch.signature = (await fs.readFile(args.signaturePath, "utf-8")) || null;
           } else if (args.signature !== undefined) {
-            resolvedSignature = args.signature || undefined;
+            patch.signature = args.signature || null;
           }
-          const updated = await store.upsertAccount({
-            ...acct,
-            signature: resolvedSignature,
-            style: args.style ?? acct.style,
-          });
+          if (args.style !== undefined) patch.style = args.style;
+          const updated = await store.updateSettings(args.account, patch);
+          if (!updated)
+            return fail(`no account registered for "${args.account}"`);
           const data = {
             signature: updated.signature ?? null,
             style: updated.style ?? null,
@@ -304,7 +306,7 @@ export function registerAccountTools(
       "remove_account",
       {
         description:
-          "Forget an account and delete its stored tokens. Disabled in --read-only mode.",
+          "Forget an account and delete its stored tokens.",
         inputSchema: z.object({ email: z.string().email() }),
         outputSchema: removeAccountOutputSchema,
       },

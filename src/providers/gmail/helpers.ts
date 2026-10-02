@@ -1,3 +1,6 @@
+import type { ParsedMail } from "mailparser";
+import type { SendMailOptions } from "nodemailer";
+import { applyParsedReference } from "../shared/reference-message.js";
 import type { gmail_v1 } from "googleapis";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
 
@@ -66,17 +69,6 @@ export function mapHeaderAddr(
 
 type GmailMessage = gmail_v1.Schema$Message;
 type GmailMessagePart = gmail_v1.Schema$MessagePart;
-
-interface ComposerAttachment {
-  filename: string;
-  content: Buffer;
-  contentType?: string;
-  cid?: string;
-}
-
-interface ComposerOptions extends Record<string, unknown> {
-  attachments?: ComposerAttachment[];
-}
 
 export function findHeader(
   headers: GmailMessagePart["headers"],
@@ -253,14 +245,13 @@ export async function buildRawMessage(
   account: AccountRecord,
   msg: SendInput,
   messageId?: string,
+  reference?: ParsedMail,
 ): Promise<{ raw: string; threadId?: string }> {
   const { body: transformed, images } = parseInlineImages(msg.body);
 
-  const mailOptions: ComposerOptions = {
-    from: `${account.displayName ?? ""} <${account.email}>`,
-    to: msg.to
-      .map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address))
-      .join(", "),
+  const mailOptions: SendMailOptions = {
+    from: { name: account.displayName ?? "", address: account.email },
+    to: msg.to.map((address) => ({ ...address, name: address.name ?? "" })),
     subject: msg.subject,
     attachDataUrls: true,
   };
@@ -272,14 +263,10 @@ export async function buildRawMessage(
   }
 
   if (msg.cc && msg.cc.length > 0) {
-    mailOptions.cc = msg.cc
-      .map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address))
-      .join(", ");
+    mailOptions.cc = msg.cc.map((address) => ({ ...address, name: address.name ?? "" }));
   }
   if (msg.bcc && msg.bcc.length > 0) {
-    mailOptions.bcc = msg.bcc
-      .map((a) => (a.name ? `"${a.name}" <${a.address}>` : a.address))
-      .join(", ");
+    mailOptions.bcc = msg.bcc.map((address) => ({ ...address, name: address.name ?? "" }));
   }
 
   if (images.length > 0) {
@@ -308,13 +295,12 @@ export async function buildRawMessage(
     mailOptions.messageId = messageId;
   }
 
-  const rawStr = await new Promise<string>((resolve, reject) => {
-    const mc = new MailComposer(mailOptions);
-    mc.compile().build((err: Error | null, buf: Buffer) => {
-      if (err) reject(err);
-      else resolve(buf.toString("utf-8"));
-    });
+  if (reference) applyParsedReference(mailOptions, reference, msg, account.email);
+  const compiled = new MailComposer(mailOptions).compile();
+  compiled.keepBcc = true;
+  const raw = await new Promise<Buffer>((resolve, reject) => {
+    compiled.build((error: Error | null, bytes: Buffer) => error ? reject(error) : resolve(bytes));
   });
 
-  return { raw: base64urlEncode(Buffer.from(rawStr, "utf-8")) };
+  return { raw: base64urlEncode(raw) };
 }

@@ -1,6 +1,4 @@
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join as pathJoin } from "node:path";
+import { writeAttachmentFile } from "../shared/attachment-files.js";
 
 import type { gmail_v1 } from "googleapis";
 
@@ -65,7 +63,7 @@ export async function listEmails(
 
   const skip = opts.skip ?? 0;
   const pageIds = allIds.slice(skip, skip + limit);
-  const hasMore = skip + limit < allIds.length;
+  const hasMore = skip + limit < allIds.length || Boolean(pageToken);
 
   if (pageIds.length === 0) {
     return { items: [], hasMore };
@@ -204,15 +202,14 @@ export async function readAttachment(
   });
 
   const data = attRes.data.data;
-  if (!data) throw new Error("attachment data is empty");
+  if (data == null) throw new Error("attachment data is missing");
 
   const buf = Buffer.from(
     data.replace(/-/g, "+").replace(/_/g, "/"),
     "base64",
   );
 
-  const outPath = pathJoin(tmpdir(), name);
-  writeFileSync(outPath, buf);
+  const outPath = await writeAttachmentFile(name, buf);
 
   return {
     name,

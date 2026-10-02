@@ -8,9 +8,11 @@ import { registerNewEmailTool } from "./new-emails.js";
 import { ACCOUNT_POLL_TIMEOUT_MS } from "./new-emails-timeout.js";
 import { createLogger, type Logger } from "../logger.js";
 import { AccountStore, type AccountRecord, type NewEmailClaimCandidate } from "../store/account-store.js";
-import type { EmailProvider, EmailSummary } from "../providers/types.js";
+import type { EmailFull, EmailProvider, EmailSummary, ListEmailsResult } from "../providers/types.js";
 import type { Registry } from "../providers/registry.js";
 import type { ResolvedTools } from "../config.js";
+import type { GmailClientFactory } from "../providers/gmail/client.js";
+import { listEmails as listGmailEmails } from "../providers/gmail/read-ops.js";
 
 const tools: ResolvedTools = { enabledTools: null, disabledTools: null };
 
@@ -188,6 +190,22 @@ function registerHandler(store: AccountStore, reg: Registry, logger?: Logger): H
 
 function structured(result: unknown): Record<string, unknown> {
   return (result as { structuredContent: Record<string, unknown> }).structuredContent;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function currentRegistry(store: AccountStore, prov: EmailProvider): Registry {
+  return {
+    resolveByEmail: (email: string) => {
+      const stored = store.getAccount(email);
+      if (!stored) throw new Error(`no account registered for "${email}"`);
+      return { account: stored, provider: prov };
+    },
+  } as unknown as Registry;
 }
 
 describe("get_new_emails", () => {
@@ -429,6 +447,226 @@ describe("get_new_emails", () => {
     }
   });
 
+  it.each(["single", "all"] as const)("does not claim a late hydrated read after a %s-account timeout, allowing retry", async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const checkpoint = { receivedAt: "2026-01-01T00:00:00.000Z", deliveredIdsAtReceivedAt: ["cursor"] };
+      const acct = account("a@example.com", checkpoint);
+      const store = memoryStore([acct]);
+      const item = summary("pending", "2026-01-02T00:00:00.000Z");
+      const prov = provider([item]);
+      const lateRead = deferred<EmailFull>();
+      vi.mocked(prov.readEmail).mockImplementationOnce(() => lateRead.promise);
+      const handler = registerHandler(store, currentRegistry(store, prov));
+      const args = mode === "single" ? { account: acct.email } : {};
+
+      const pending = handler(args);
+      await vi.advanceTimersByTimeAsync(ACCOUNT_POLL_TIMEOUT_MS + 1);
+      const result = await pending;
+      if (mode === "single") {
+        expect(result).toMatchObject({ isError: true });
+      } else {
+        expect(structured(result)).toMatchObject({
+          count: 0,
+          errors: [{ account: acct.email, message: expect.stringContaining("hydrate new emails timed out") }],
+        });
+      }
+      lateRead.resolve({ ...item, bodyText: "late body" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getAccount(acct.email)?.newEmailCheckpoint).toEqual(checkpoint);
+      expect(store.claimNewEmails).not.toHaveBeenCalled();
+      const retry = structured(await handler(args));
+      expect(retry.emails).toMatchObject([{ id: "pending", body: "body pending" }]);
+      expect(store.getAccount(acct.email)?.newEmailCheckpoint).toEqual({
+        receivedAt: item.receivedAt,
+        deliveredIdsAtReceivedAt: ["pending"],
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["single", "all"] as const)("does not initialize a late baseline after a %s-account timeout", async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const acct = account("a@example.com");
+      const store = memoryStore([acct]);
+      const baseline = summary("baseline", "2026-01-02T00:00:00.000Z");
+      const items = [baseline];
+      const prov = provider(items);
+      const lateList = deferred<ListEmailsResult>();
+      vi.mocked(prov.listEmails).mockImplementationOnce(() => lateList.promise);
+      const handler = registerHandler(store, currentRegistry(store, prov));
+      const args = mode === "single" ? { account: acct.email, limit: 0 } : { limit: 0 };
+      const pending = handler(args);
+      await vi.advanceTimersByTimeAsync(ACCOUNT_POLL_TIMEOUT_MS + 1);
+      const result = await pending;
+      if (mode === "single") expect(result).toMatchObject({ isError: true });
+      else expect(structured(result)).toMatchObject({
+        count: 0,
+        errors: [{ account: acct.email, message: expect.stringContaining("collect new-email candidates timed out") }],
+      });
+      lateList.resolve({ items: [baseline], hasMore: false });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getAccount(acct.email)?.newEmailCheckpoint).toBeUndefined();
+      expect(store.updateNewEmailCheckpoint).not.toHaveBeenCalled();
+      expect(structured(await handler(args))).toMatchObject({ count: 0, errors: [] });
+      expect(store.getAccount(acct.email)?.newEmailCheckpoint).toEqual({
+        receivedAt: baseline.receivedAt, deliveredIdsAtReceivedAt: ["baseline"],
+      });
+      items.unshift(summary("after-baseline", "2026-01-03T00:00:00.000Z"));
+      expect(structured(await handler(mode === "single" ? { account: acct.email } : {})).emails)
+        .toMatchObject([{ id: "after-baseline" }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["single", "claim"], ["all", "claim"],
+    ["single", "baseline"], ["all", "baseline"],
+  ] as const)("awaits a %s-account durable %s blocked on the store's serial lock", async (mode, stage) => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hypermail-poll-lock-"));
+    const key = Buffer.alloc(32, 19);
+    const releaseLock = deferred<void>();
+    let lockTask: Promise<void> | undefined;
+    try {
+      const store = await AccountStore.open({ dataDir, key });
+      const initialCheckpoint = stage === "claim" ? {
+        receivedAt: "2026-01-01T00:00:00.000Z", deliveredIdsAtReceivedAt: [],
+      } : undefined;
+      const acct = await store.upsertAccount(account("a@example.com", initialCheckpoint));
+      // Hold the real per-account queue before the durable operation enters it.
+      const locked = deferred<void>();
+      // Test-only access to the actual serialization queue; no fake claim/store semantics.
+      const serialStore = store as unknown as {
+        runSerial<T>(email: string, task: () => Promise<T>): Promise<T>;
+      };
+      lockTask = serialStore.runSerial(acct.email, async () => {
+        locked.resolve();
+        await releaseLock.promise;
+      });
+      await locked.promise;
+      const commitStarted = deferred<void>();
+      if (stage === "claim") {
+        const claim = store.claimNewEmails.bind(store);
+        vi.spyOn(store, "claimNewEmails").mockImplementation((email, candidates) => {
+          commitStarted.resolve();
+          return claim(email, candidates);
+        });
+      } else {
+        const update = store.updateNewEmailCheckpoint.bind(store);
+        vi.spyOn(store, "updateNewEmailCheckpoint").mockImplementation((email, checkpoint) => {
+          commitStarted.resolve();
+          return update(email, checkpoint);
+        });
+      }
+      const prov = provider([summary("pending", "2026-01-02T00:00:00.000Z")]);
+      const handler = registerHandler(store, currentRegistry(store, prov));
+      vi.useFakeTimers();
+      let settled = false;
+      const pending = handler(mode === "single" ? { account: acct.email } : {})
+        .then((result) => { settled = true; return result; });
+      await commitStarted.promise;
+      await vi.advanceTimersByTimeAsync(ACCOUNT_POLL_TIMEOUT_MS + 1);
+      expect(settled).toBe(false);
+      expect(store.getAccount(acct.email)?.newEmailCheckpoint).toEqual(initialCheckpoint);
+      vi.useRealTimers();
+      releaseLock.resolve();
+      const result = structured(await pending);
+      expect(result).toMatchObject({
+        emails: stage === "claim" ? [{ id: "pending" }] : [],
+        errors: [],
+      });
+      const reopened = await AccountStore.open({ dataDir, key });
+      expect(reopened.getAccount(acct.email)?.newEmailCheckpoint).toEqual({
+        receivedAt: "2026-01-02T00:00:00.000Z", deliveredIdsAtReceivedAt: ["pending"],
+      });
+      expect(structured(await handler(mode === "single" ? { account: acct.email } : {})).emails).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      releaseLock.resolve();
+      await lockTask;
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["single", "claim"], ["all", "claim"],
+    ["single", "baseline"], ["all", "baseline"],
+  ] as const)("reports %s-account %s persistence failures instead of returning delivery", async (mode, stage) => {
+    const checkpoint = stage === "claim" ? {
+      receivedAt: "2026-01-01T00:00:00.000Z", deliveredIdsAtReceivedAt: [],
+    } : undefined;
+    const acct = account("a@example.com", checkpoint);
+    const store = memoryStore([acct]);
+    if (stage === "claim") vi.mocked(store.claimNewEmails).mockRejectedValueOnce(new Error("persistence failed"));
+    else vi.mocked(store.updateNewEmailCheckpoint).mockRejectedValueOnce(new Error("persistence failed"));
+    const prov = provider([summary("pending", "2026-01-02T00:00:00.000Z")]);
+    const handler = registerHandler(store, currentRegistry(store, prov));
+    const result = await handler(mode === "single" ? { account: acct.email } : {});
+    if (mode === "single") expect(result).toMatchObject({
+      isError: true, content: [{ type: "text", text: "persistence failed" }],
+    });
+    else expect(structured(result)).toMatchObject({
+      emails: [], errors: [{ account: acct.email, message: "persistence failed" }],
+    });
+    expect(store.getAccount(acct.email)?.newEmailCheckpoint).toEqual(checkpoint);
+  });
+
+  it("discovers the oldest pending Gmail message beyond an exact full first page", async () => {
+    const acct = { ...account("gmail@example.com", {
+      receivedAt: "2026-01-01T00:00:00.000Z", deliveredIdsAtReceivedAt: ["cursor"],
+    }), provider: "gmail" as const };
+    const store = memoryStore([acct]);
+    const newer = Array.from({ length: 100 }, (_, index) =>
+      summary(`newer-${index}`, "2026-01-03T00:00:00.000Z"));
+    const items = [
+      ...newer,
+      summary("pending-page-two", "2026-01-02T00:00:00.000Z"),
+      summary("cursor", "2026-01-01T00:00:00.000Z"),
+    ];
+    const gmail = {
+      users: {
+        messages: {
+          list: vi.fn(async ({ pageToken }: { pageToken?: string }) => ({
+            data: pageToken === "page-two"
+              ? { messages: items.slice(100).map(({ id }) => ({ id })) }
+              : {
+                  messages: newer.map(({ id }) => ({ id })),
+                  nextPageToken: "page-two",
+                },
+          })),
+          get: vi.fn(async ({ id }: { id: string }) => {
+            const item = items.find((entry) => entry.id === id);
+            if (!item) throw new Error(`unknown fixture message: ${id}`);
+            return {
+              data: {
+                id,
+                labelIds: ["INBOX"],
+                internalDate: String(Date.parse(item.receivedAt!)),
+                payload: { headers: [{ name: "Subject", value: item.subject }] },
+              },
+            };
+          }),
+        },
+      },
+    };
+    // Fake only the API boundary; use real Gmail pagination and metadata hydration.
+    const clients = { get: () => ({ gmail }) } as unknown as GmailClientFactory;
+    const prov: EmailProvider = {
+      ...provider(items),
+      id: "gmail",
+      listEmails: (stored, options) => listGmailEmails(clients, stored, options),
+    };
+    const handler = registerHandler(store, currentRegistry(store, prov));
+    expect(structured(await handler({ account: acct.email, limit: 1 })).emails)
+      .toMatchObject([{ id: "pending-page-two" }]);
+    expect(store.getAccount(acct.email)?.newEmailCheckpoint).toEqual({
+      receivedAt: "2026-01-02T00:00:00.000Z", deliveredIdsAtReceivedAt: ["pending-page-two"],
+    });
+  });
+
   it("starts all-account candidate collection in parallel", async () => {
     const a = account("a@example.com", { receivedAt: "2026-01-01T00:00:00.000Z", deliveredIdsAtReceivedAt: [] });
     const b = account("b@example.com", { receivedAt: "2026-01-01T00:00:00.000Z", deliveredIdsAtReceivedAt: [] });
@@ -564,7 +802,8 @@ describe("get_new_emails", () => {
         ...((structured(second).emails as Array<{ id: string }>).map((email) => email.id)),
       ];
 
-      expect(delivered.filter((id) => id === "new")).toHaveLength(1);
+      expect(delivered).toEqual(["new"]);
+      expect([structured(first).count, structured(second).count].sort()).toEqual([0, 1]);
       const reopened = await AccountStore.open({ dataDir, key: Buffer.alloc(32, 7) });
       expect(reopened.getAccount(acct.email)?.newEmailCheckpoint).toEqual({
         receivedAt: "2026-01-02T00:00:00.000Z",

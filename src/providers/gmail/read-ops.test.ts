@@ -1,8 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { readFile, rm } from "node:fs/promises";
+import { basename, dirname } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountRecord } from "../../store/account-store.js";
 import type { GmailClientFactory } from "./client.js";
 import { listEmails, readAttachment, readEmail, searchEmails } from "./read-ops.js";
+
+const downloadedPaths: string[] = [];
+afterEach(async () => {
+  await Promise.all(downloadedPaths.splice(0).map((path) =>
+    rm(dirname(path), { recursive: true, force: true }),
+  ));
+});
 
 const account: AccountRecord = {
   email: "user@example.com",
@@ -160,9 +169,81 @@ describe("Gmail native web links", () => {
       "message-1",
       "attachment-1",
     );
+    downloadedPaths.push(result.path);
 
     expect(result.webUrl).toBe(
       "https://mail.google.com/mail/u/?authuser=user%2Btag%40example.com#all/message-1",
     );
+  });
+});
+
+describe("Gmail attachment download isolation", () => {
+  it.each(["../../victim.pdf", "..\\victim.pdf"])("isolates %s and preserves downloaded content", async (name) => {
+    const clients = clientsFor({ users: { messages: {
+      get: async () => ({ data: { payload: { parts: [{
+        filename: name, mimeType: "application/pdf", body: { attachmentId: "att" },
+      }] } } }),
+      attachments: { get: async () => ({ data: { data: Buffer.from("pdf bytes").toString("base64url") } }) },
+    } } });
+    const first = await readAttachment(clients, account, "message", "att");
+    downloadedPaths.push(first.path);
+    const second = await readAttachment(clients, account, "message", "att");
+    downloadedPaths.push(second.path);
+    expect(first.name).toBe(name);
+    expect(first.contentType).toBe("application/pdf");
+    expect(basename(first.path)).toBe("attachment.pdf");
+    expect(dirname(first.path)).not.toBe(dirname(second.path));
+    expect(await readFile(first.path, "utf8")).toBe("pdf bytes");
+    expect(await readFile(second.path, "utf8")).toBe("pdf bytes");
+  });
+
+  it("downloads explicitly empty attachment data as a zero-byte file", async () => {
+    const clients = clientsFor({ users: { messages: {
+      get: async () => ({ data: {} }),
+      attachments: { get: async () => ({ data: { data: "" } }) },
+    } } });
+    const result = await readAttachment(clients, account, "message", "empty");
+    downloadedPaths.push(result.path);
+    expect(await readFile(result.path)).toEqual(Buffer.alloc(0));
+  });
+
+  it.each([null, undefined])("rejects missing attachment data (%s)", async (data) => {
+    const clients = clientsFor({ users: { messages: {
+      get: async () => ({ data: {} }),
+      attachments: { get: async () => ({ data: { data } }) },
+    } } });
+    await expect(readAttachment(clients, account, "message", "missing")).rejects.toThrow("attachment data is missing");
+  });
+});
+
+describe("Gmail pagination", () => {
+  it("keeps a remaining page discoverable and ends at the final page", async () => {
+    const list = vi.fn(async ({ pageToken }: { pageToken?: string }) => ({
+      data: pageToken
+        ? { messages: [{ id: "second" }] }
+        : { messages: [{ id: "first" }], nextPageToken: "next" },
+    }));
+    const get = vi.fn(async ({ id }: { id: string }) => ({
+      data: { payload: { headers: [{ name: "Subject", value: id }] } },
+    }));
+    const clients = clientsFor({ users: { messages: { list, get } } });
+
+    const first = await listEmails(clients, account, { limit: 1 });
+    expect(first.items.map((item) => item.id)).toEqual(["first"]);
+    expect(first.hasMore).toBe(true);
+
+    const second = await listEmails(clients, account, { limit: 1, skip: 1 });
+    expect(second.items.map((item) => item.id)).toEqual(["second"]);
+    expect(second.hasMore).toBe(false);
+  });
+
+  it("does not advertise another page when an exact full page has no token", async () => {
+    const clients = clientsFor({ users: { messages: {
+      list: async () => ({ data: { messages: [{ id: "only" }] } }),
+      get: async () => ({ data: { payload: { headers: [] } } }),
+    } } });
+    const result = await listEmails(clients, account, { limit: 1 });
+    expect(result.items.map((item) => item.id)).toEqual(["only"]);
+    expect(result.hasMore).toBe(false);
   });
 });

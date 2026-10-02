@@ -69,9 +69,15 @@ export class ImapClient {
 
   /** Get (or create) the ImapFlow instance. */
   async getImap(): Promise<ImapFlow> {
-    if (this.imap) return this.imap;
+    if (this.imap) {
+      const connection = this.imap;
+      await this.connecting;
+      if (this.imap !== connection)
+        throw new Error("IMAP connection unavailable after connect");
+      return connection;
+    }
 
-    this.imap = new ImapFlow({
+    const connection = new ImapFlow({
       host: this.tokens.host,
       port: this.tokens.port,
       secure: this.tokens.secure,
@@ -85,28 +91,40 @@ export class ImapClient {
       socketTimeout: IMAP_SOCKET_TIMEOUT_MS,
     });
 
-    // Connect on first use and serialise concurrent callers.
-    if (!this.connecting) {
-      this.log("connectStart");
-      this.connecting = this.withOperationTimeout("connect", this.imap.connect())
-        .then(() => {
-          this.log("connectEnd");
-        })
-        .catch((err) => {
-          const normalized = this.normalizeConnectError(err);
-          this.log("connectError", {
-            message: normalized.message,
-            code: imapErrorCode(err) ?? null,
-            authenticationFailed: hasAuthenticationFailedFlag(err),
-          });
-          // Clear state so next caller retries
-          this.resetImap();
-          throw normalized;
+    this.imap = connection;
+    const invalidate = () => {
+      if (this.imap === connection) {
+        this.imap = null;
+        this.connecting = null;
+      }
+    };
+    connection.on("close", invalidate);
+    connection.on("error", (err: unknown) => {
+      // Never log provider error messages: they can contain credentials or commands.
+      this.log("connectionError", {
+        authenticationFailed: hasAuthenticationFailedFlag(err),
+      });
+      invalidate();
+    });
+
+    this.log("connectStart");
+    const connecting = this.withOperationTimeout("connect", connection.connect())
+      .then(() => {
+        this.log("connectEnd");
+      })
+      .catch((err) => {
+        const normalized = this.normalizeConnectError(err);
+        this.log("connectError", {
+          authenticationFailed: hasAuthenticationFailedFlag(err),
         });
-    }
-    await this.connecting;
-    if (!this.imap) throw new Error("IMAP connection unavailable after connect");
-    return this.imap;
+        if (this.imap === connection) this.resetImap();
+        throw normalized;
+      });
+    this.connecting = connecting;
+    await connecting;
+    if (this.imap !== connection)
+      throw new Error("IMAP connection unavailable after connect");
+    return connection;
   }
 
   /** Get (or create) a nodemailer SMTP transporter. */
@@ -164,14 +182,15 @@ export class ImapClient {
 
   /** Disconnect IMAP and close the SMTP pool. */
   async disconnect(): Promise<void> {
-    if (this.imap) {
+    const imap = this.imap;
+    this.imap = null;
+    this.connecting = null;
+    if (imap) {
       try {
-        await this.imap.logout();
+        await imap.logout();
       } catch {
         /* ignore */
       }
-      this.imap = null;
-      this.connecting = null;
     }
     if (this.transporter) {
       this.transporter.close();

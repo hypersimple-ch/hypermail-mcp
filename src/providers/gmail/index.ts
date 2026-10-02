@@ -42,7 +42,7 @@ import {
   trashEmail,
   sendDraft,
   addAttachmentToDraft,
-  removeAttachmentFromDraft,
+  removeAttachmentsFromDraft,
   markRead,
   createFolder,
   renameFolder,
@@ -299,12 +299,12 @@ export class GmailProvider implements EmailProvider {
     );
   }
 
-  async removeAttachmentFromDraft(
+  async removeAttachmentsFromDraft(
     account: AccountRecord,
     draftId: string,
-    attachmentId: string,
-  ): Promise<void> {
-    return removeAttachmentFromDraft(this.clients, account, draftId, attachmentId);
+    attachmentIds: string[],
+  ): Promise<EmailReference> {
+    return removeAttachmentsFromDraft(this.clients, account, draftId, attachmentIds);
   }
 
   // ── organize ──

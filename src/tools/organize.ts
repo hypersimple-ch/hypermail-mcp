@@ -69,8 +69,7 @@ export function registerOrganizeTools(
       {
         description:
           "Move a message to the Archive folder. Returns `webUrl`, the shareable native web-client " +
-          "link for the post-operation message; it may be omitted with `webUrlUnavailableReason`. " +
-          "Disabled in --read-only mode.",
+          "link for the post-operation message; it may be omitted with `webUrlUnavailableReason`.",
         inputSchema: archiveMoveSchema,
         outputSchema: archiveOutputSchema,
       },
@@ -97,7 +96,7 @@ export function registerOrganizeTools(
         description:
           "Move a message to the Deleted Items (trash) folder. Returns `webUrl`, the shareable native " +
           "web-client link for the post-operation message; it may be omitted with " +
-          "`webUrlUnavailableReason`. Disabled in --read-only mode.",
+          "`webUrlUnavailableReason`.",
         inputSchema: archiveMoveSchema,
         outputSchema: trashOutputSchema,
       },
@@ -126,7 +125,7 @@ export function registerOrganizeTools(
           "Move a message to any folder by well-known name (e.g. 'inbox', 'drafts', " +
           "'junkemail', 'sentitems', 'outbox') or custom folder ID. " +
           "Returns `webUrl`, the shareable native web-client link for the post-operation message; " +
-          "it may be omitted with `webUrlUnavailableReason`. Disabled in --read-only mode.",
+          "it may be omitted with `webUrlUnavailableReason`.",
         inputSchema: z.object({
           account: z.string().email(),
           id: z.string().min(1).describe("Message ID to move"),
@@ -176,8 +175,7 @@ export function registerOrganizeTools(
       {
         description:
           "Mark a message as read. Returns `webUrl`, the shareable native web-client link for the " +
-          "post-operation message; it may be omitted with `webUrlUnavailableReason`. " +
-          "Disabled in --read-only mode.",
+          "post-operation message; it may be omitted with `webUrlUnavailableReason`.",
         inputSchema: markReadInputSchema,
         outputSchema: markReadOutputSchema,
       },
@@ -197,8 +195,7 @@ export function registerOrganizeTools(
       {
         description:
           "Mark a message as unread. Returns `webUrl`, the shareable native web-client link for the " +
-          "post-operation message; it may be omitted with `webUrlUnavailableReason`. " +
-          "Disabled in --read-only mode.",
+          "post-operation message; it may be omitted with `webUrlUnavailableReason`.",
         inputSchema: markReadInputSchema,
         outputSchema: markReadOutputSchema,
       },

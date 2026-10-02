@@ -301,15 +301,20 @@ export async function addAttachmentToDraft(
   };
 }
 
-export async function removeAttachmentFromDraft(
+export async function removeAttachmentsFromDraft(
   client: Client,
   account: AccountRecord,
   draftId: string,
-  attachmentId: string,
-): Promise<void> {
-  await client
-    .api(`/me/messages/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(attachmentId)}`)
-    .delete();
+  attachmentIds: string[],
+): Promise<EmailReference> {
+  const ids = [...new Set(attachmentIds)];
+  for (const id of ids) {
+    await client.api(`/me/messages/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(id)}`).get();
+  }
+  for (const id of ids) {
+    await client.api(`/me/messages/${encodeURIComponent(draftId)}/attachments/${encodeURIComponent(id)}`).delete();
+  }
+  return messageReference(client, await fetchMessageRepresentation(client, draftId), draftId);
 }
 
 export async function moveEmail(
