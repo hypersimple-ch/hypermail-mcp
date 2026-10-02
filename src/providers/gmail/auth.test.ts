@@ -19,6 +19,7 @@ describe("Gmail authorization-code OAuth", () => {
       clientId: "client-id",
       clientSecret: "client-secret",
       redirectUri: "https://mail.example.com/oauth/gmail/callback",
+      loginHint: "user@example.com",
     });
     const url = new URL(flow.verificationUri);
 
@@ -28,6 +29,7 @@ describe("Gmail authorization-code OAuth", () => {
     expect(url.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/gmail.modify");
     expect(url.searchParams.get("access_type")).toBe("offline");
     expect(url.searchParams.get("prompt")).toBe("consent");
+    expect(url.searchParams.get("login_hint")).toBe("user@example.com");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("code_challenge")).toBeTruthy();
     expect(url.searchParams.get("state")).toBe(flow.state);

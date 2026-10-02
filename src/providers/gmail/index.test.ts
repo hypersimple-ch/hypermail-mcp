@@ -92,6 +92,9 @@ describe("GmailProvider", () => {
     const cached = clients.get(existing);
 
     const added = await provider.addAccount({ email: existing.email });
+    expect(beginAuthorizationCode).toHaveBeenCalledWith(
+      expect.objectContaining({ loginHint: existing.email }),
+    );
     if (added.status !== "pending") throw new Error("expected pending OAuth flow");
 
     const result = await provider.completeAddAccount(added.handle, {

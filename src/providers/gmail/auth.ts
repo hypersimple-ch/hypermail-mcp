@@ -21,6 +21,7 @@ export interface AuthorizationCodeBeginOptions {
   clientId?: string;
   clientSecret?: string;
   redirectUri?: string;
+  loginHint?: string;
 }
 
 export interface AuthorizationCodeBegin {
@@ -263,6 +264,7 @@ export async function beginAuthorizationCode(
     code_challenge: codeChallenge(codeVerifier),
     code_challenge_method: "S256",
   });
+  if (options.loginHint) params.set("login_hint", options.loginHint);
 
   const verificationUri = `${GOOGLE_AUTH_URL}?${params.toString()}`;
   return {

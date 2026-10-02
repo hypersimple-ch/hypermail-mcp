@@ -95,6 +95,7 @@ export class GmailProvider implements EmailProvider {
       clientId: this.clientId,
       clientSecret: this.clientSecret,
       redirectUri: this.redirectUri,
+      loginHint: input.email,
     });
 
     const handle = randomUUID();
