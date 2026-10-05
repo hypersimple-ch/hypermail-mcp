@@ -3,8 +3,9 @@
 A **Model Context Protocol** server that lets an agent operate any of the user's
 inboxes through a single, unified tool surface.
 
-## Unreleased correctness fixes
+## v0.7.28 — Correctness fixes
 
+- Gmail OAuth includes the account address as a login hint to help select the intended Google account.
 - Composition is Markdown-only: `send_email`, `draft_email`, and replacement content in `edit_draft` reject raw HTML before provider mutations. `draft_email` and `edit_draft` return authoritative `draftMarkdown`, replacing `draftHtml`. `read_email` supports only `markdown` (default) and explicit `html`; plain-text-only messages retain their literal body.
 - Draft selections are exact, unique Markdown words, phrases or complete blocks copied from `draftMarkdown` or a complete current `read_email`. Re-read truncated previews first. Source-position edits preserve unselected HTML bytes, signatures and thread history. Unsafe syntax/structure selections are rejected before attachment changes. Inline replacements require inline Markdown without a signature; select a complete block for multiple paragraphs.
 - Persistence checks compare the complete HTML tree, not replacement substrings or Markdown equality. Outlook envelopes, encoding declarations, CRLF and safe block-separator whitespace are tolerated; missing history or changes to inline whitespace, styles, links, images and comments remain failures.
