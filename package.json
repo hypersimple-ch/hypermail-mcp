@@ -1,6 +1,6 @@
 {
   "name": "hypermail-mcp",
-  "version": "0.7.27",
+  "version": "0.7.28",
   "description": "Unified email MCP server — operate any inbox (Outlook now, IMAP/Gmail later) by passing an email address.",
   "type": "module",
   "bin": {
