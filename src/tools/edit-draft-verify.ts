@@ -1,32 +1,19 @@
 import type { AccountRecord } from "../store/account-store.js";
 import type { EmailFull, EmailProvider } from "../providers/types.js";
+import { draftBodiesEquivalent } from "./draft-html.js";
 
 const EDIT_DRAFT_VERIFY_DELAYS_MS = [250, 1000, 2000] as const;
 
 export interface BodyEditExpectation {
   expectedBody: string;
-  oldText: string;
-  replacementBody: string;
 }
 
-function normalizeDraftBody(body: string): string {
-  return body.replace(/\r\n/g, "\n").trim();
-}
 
 export function bodyEditPersisted(
   actualBody: string,
   expectation: BodyEditExpectation,
 ): boolean {
-  const actual = normalizeDraftBody(actualBody);
-  const expected = normalizeDraftBody(expectation.expectedBody);
-  if (actual === expected) return true;
-
-  const oldText = normalizeDraftBody(expectation.oldText);
-  const replacementBody = normalizeDraftBody(expectation.replacementBody);
-  if (oldText === replacementBody) {
-    return actual.includes(replacementBody);
-  }
-  return actual.includes(replacementBody) && !actual.includes(oldText);
+  return draftBodiesEquivalent(actualBody, expectation.expectedBody);
 }
 
 function delay(ms: number): Promise<void> {

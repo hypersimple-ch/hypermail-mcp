@@ -174,36 +174,17 @@ export const folderInfoOutputSchema = z.object({
 
 export interface ComposeBodyInput {
   body: string;
-  format: "html" | "markdown";
   signature?: string;
   style?: { fontFamily?: string; fontSize?: string; fontColor?: string };
   includeSignature: boolean;
 }
 
-const meaningfulHtmlTagRe = /<\/?(?:p|div|br|blockquote|table|thead|tbody|tfoot|tr|td|th|ul|ol|li|a|span|font|b|strong|em|i|u|img|hr|pre|h[1-6])\b/i;
-
-function isSuspiciousPlainTextHtml(body: string): boolean {
-  return (
-    body.trim() !== "" &&
-    /\r\n|\r|\n/.test(body) &&
-    !meaningfulHtmlTagRe.test(body)
-  );
-}
 
 export function composeBody(
   input: ComposeBodyInput,
 ): { body: string; isHtml: boolean } {
-  const { body, format, signature, style, includeSignature } = input;
-
-  if (format === "html" && isSuspiciousPlainTextHtml(body)) {
-    throw new Error(
-      'format: "html" requires valid HTML for multiline bodies. ' +
-        'Use format: "markdown" for plain text with paragraphs, or add HTML tags such as <p> or <br>.',
-    );
-  }
-
-  // Convert markdown to HTML first, then proceed as HTML
-  const htmlBody = format === "markdown" ? markdownToHtml(body) : body;
+  const { body, signature, style, includeSignature } = input;
+  const htmlBody = markdownToHtml(body);
 
   const hasSignature = includeSignature && !!signature;
   const hasStyle = !!(
@@ -244,29 +225,6 @@ export function escapeHtml(text: string): string {
     .replace(/\n/g, "<br>");
 }
 
-export function applyExactTextEdit(
-  content: string,
-  oldText: string,
-  newText: string,
-): string {
-  if (oldText.length === 0) {
-    throw new Error("old_text must not be empty");
-  }
-
-  const first = content.indexOf(oldText);
-  if (first === -1) {
-    throw new Error("old_text was not found in the current draft body");
-  }
-
-  const second = content.indexOf(oldText, first + oldText.length);
-  if (second !== -1) {
-    throw new Error(
-      "old_text matched multiple sections in the current draft body; provide a more specific selection",
-    );
-  }
-
-  return content.slice(0, first) + newText + content.slice(first + oldText.length);
-}
 
 // ── thread boundary detection ──
 

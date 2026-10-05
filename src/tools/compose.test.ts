@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { registerComposeTools } from "./compose.js";
-import { sendEmailSchema } from "./compose-schemas.js";
+import { editDraftSchema, sendEmailSchema } from "./compose-schemas.js";
 import type { ResolvedTools } from "../config.js";
 import type { EmailProvider } from "../providers/types.js";
 import type { Registry } from "../providers/registry.js";
@@ -64,8 +64,85 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("Markdown-only composition", () => {
+  it.each(["send_email", "draft_email"])("rejects raw HTML before %s mutates the provider", async (toolName) => {
+    const provider = {
+      id: "outlook",
+      sendEmail: vi.fn(),
+      saveDraft: vi.fn(),
+      readEmail: vi.fn(),
+    } as unknown as EmailProvider;
+    const result = await registerHandler(provider, toolName)(sendEmailSchema.parse({
+      account: account.email,
+      to: [{ address: "recipient@example.com" }],
+      subject: "Subject",
+      body: '<div style="color:red">Bonjour</div>',
+      include_signature: false,
+      inReplyTo: false,
+    }));
+    expect(result).toMatchObject({ isError: true });
+    expect(errorText(result)).toBe("Raw HTML is not supported. Use Markdown for email content.");
+    expect(provider.sendEmail).not.toHaveBeenCalled();
+    expect(provider.saveDraft).not.toHaveBeenCalled();
+    expect(provider.readEmail).not.toHaveBeenCalled();
+  });
+
+  it.each(["new_text", "body"])("rejects HTML in %s before removing attachments", async (field) => {
+    const provider = {
+      id: "outlook",
+      readEmail: vi.fn(async () => ({ id: "draft-1", bodyHtml: "<p>Old answer</p>" })),
+      updateDraft: vi.fn(),
+      removeAttachmentsFromDraft: vi.fn(),
+      addAttachmentToDraft: vi.fn(),
+    } as unknown as EmailProvider;
+    const result = await registerHandler(provider)(editDraftSchema.parse({
+      account: account.email,
+      id: "draft-1",
+      old_text: "Old answer",
+      [field]: "Bonjour <span>vous</span>",
+      remove_attachments: ["att-1"],
+    }));
+    expect(result).toMatchObject({ isError: true });
+    expect(errorText(result)).toBe("Raw HTML is not supported. Use Markdown for email content.");
+    expect(provider.updateDraft).not.toHaveBeenCalled();
+    expect(provider.removeAttachmentsFromDraft).not.toHaveBeenCalled();
+    expect(provider.addAttachmentToDraft).not.toHaveBeenCalled();
+  });
+
+  it("rejects absent selections without saving", async () => {
+    const provider = {
+      id: "outlook",
+      readEmail: vi.fn(async () => ({ id: "draft-1", bodyHtml: "<p>Old answer</p>" })),
+      updateDraft: vi.fn(),
+    } as unknown as EmailProvider;
+    const result = await registerHandler(provider)({
+      account: account.email, id: "draft-1", old_text: "Missing", new_text: "New answer",
+    });
+    expect(result).toMatchObject({ isError: true });
+    expect(errorText(result)).toContain("old_text");
+    expect(provider.updateDraft).not.toHaveBeenCalled();
+  });
+
+  it("allows an empty replacement while preserving history", async () => {
+    let html = "<p>Old answer</p><blockquote>Older thread</blockquote>";
+    const provider = {
+      id: "outlook",
+      readEmail: vi.fn(async () => ({ id: "draft-1", bodyHtml: html })),
+      updateDraft: vi.fn(async (_account, id, update) => {
+        html = update.body ?? html;
+        return { id };
+      }),
+    } as unknown as EmailProvider;
+    const result = await registerHandler(provider)(editDraftSchema.parse({
+      account: account.email, id: "draft-1", old_text: "Old answer", new_text: "",
+    }));
+    expect(structured(result)).toMatchObject({ edited: true, draftMarkdown: "> Older thread" });
+    expect(html).toBe("<blockquote>Older thread</blockquote>");
+  });
+});
+
 describe("draft_email", () => {
-  it("returns draftHtml when readback succeeds", async () => {
+  it("returns authoritative Markdown and final identity when readback succeeds", async () => {
     const provider = {
       id: "outlook",
       saveDraft: vi.fn(async () => ({ id: "draft-1", webUrl: "https://mutation.example/draft-1" })),
@@ -83,7 +160,6 @@ describe("draft_email", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Subject",
       body: "Draft body",
-      format: "markdown",
       include_signature: false,
       inReplyTo: false,
     });
@@ -102,7 +178,7 @@ describe("draft_email", () => {
       draft: true,
       id: "draft-1-final",
       webUrl: "https://mail.example/draft-1-final",
-      draftHtml: "<p>Draft body</p>",
+      draftMarkdown: "Draft body",
     });
   });
 
@@ -121,7 +197,6 @@ describe("draft_email", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Forwarded subject",
       body: "Forwarded body",
-      format: "markdown",
       include_signature: false,
       inReplyTo: "false",
       forwardMessageId: "message-to-forward",
@@ -157,7 +232,6 @@ describe("draft_email", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Subject",
       body: "Draft body",
-      format: "markdown",
       include_signature: false,
       inReplyTo: false,
     });
@@ -190,7 +264,6 @@ describe("draft_email", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Secret subject should not be logged",
       body: "SECRET BODY SHOULD NOT BE LOGGED",
-      format: "markdown",
       include_signature: false,
       inReplyTo: false,
     });
@@ -230,7 +303,6 @@ describe("send_email and send_draft", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Reply",
       body: "Reply body",
-      format: "markdown",
       include_signature: false,
       inReplyTo: "source-message-with-https://mail.example/source",
     });
@@ -239,7 +311,6 @@ describe("send_email and send_draft", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Forward",
       body: "Forward body",
-      format: "markdown",
       include_signature: false,
       inReplyTo: false,
       forwardMessageId: "source-message-with-https://mail.example/source",
@@ -272,7 +343,6 @@ describe("send_email and send_draft", () => {
       to: [{ address: "recipient@example.com" }],
       subject: "Subject",
       body: "Body",
-      format: "markdown",
       include_signature: false,
       inReplyTo: false,
     });
@@ -328,9 +398,8 @@ describe("edit_draft", () => {
     const result = await handler({
       account: account.email,
       id: "draft-1",
-      old_text: "<p>Old answer</p>",
-      new_text: "<p>New answer</p>",
-      format: "html",
+      old_text: "Old answer",
+      new_text: "New **answer**",
     });
 
     expect(provider.updateDraft).toHaveBeenCalledWith(
@@ -338,7 +407,7 @@ describe("edit_draft", () => {
       "draft-1",
       expect.objectContaining({
         body:
-          "<p>New answer</p><div style=\"line-height:12px\"><br></div><blockquote>Older thread</blockquote>",
+          "<p>New <strong>answer</strong></p>\n<div style=\"line-height:12px\"><br></div><blockquote>Older thread</blockquote>",
         isHtml: true,
       }),
     );
@@ -346,9 +415,9 @@ describe("edit_draft", () => {
       edited: true,
       id: "draft-1",
       webUrl: "https://mail.example/draft-1-final",
-      draftHtml:
-        "<p>New answer</p><div style=\"line-height:12px\"><br></div><blockquote>Older thread</blockquote>",
     });
+    expect(structured(result)?.draftMarkdown).toContain("New **answer**");
+    expect(structured(result)?.draftMarkdown).toContain("> Older thread");
   });
 
   it("rejects deprecated body without old_text", async () => {
@@ -362,8 +431,7 @@ describe("edit_draft", () => {
     const result = await handler({
       account: account.email,
       id: "draft-1",
-      body: "<p>Replace everything</p>",
-      format: "html",
+      body: "Replace everything",
     });
 
     expect(result).toMatchObject({ isError: true });
@@ -387,9 +455,8 @@ describe("edit_draft", () => {
     const result = await handler({
       account: account.email,
       id: "draft-1",
-      old_text: "<p>Same</p>",
-      new_text: "<p>Updated</p>",
-      format: "html",
+      old_text: "Same",
+      new_text: "Updated",
     });
 
     expect(result).toMatchObject({ isError: true });
@@ -397,30 +464,6 @@ describe("edit_draft", () => {
     expect(provider.updateDraft).not.toHaveBeenCalled();
   });
 
-  it("rejects multiline plain text replacements passed as HTML", async () => {
-    const provider = {
-      id: "outlook",
-      readEmail: vi.fn(async () => ({
-        id: "draft-1",
-        subject: "Subject",
-        bodyHtml: "<p>Old answer</p>",
-      })),
-      updateDraft: vi.fn(),
-    } as unknown as EmailProvider;
-    const handler = registerHandler(provider);
-
-    const result = await handler({
-      account: account.email,
-      id: "draft-1",
-      old_text: "<p>Old answer</p>",
-      new_text: "Line 1\n\nLine 2",
-      format: "html",
-    });
-
-    expect(result).toMatchObject({ isError: true });
-    expect(errorText(result)).toContain('format: "html" requires valid HTML');
-    expect(provider.updateDraft).not.toHaveBeenCalled();
-  });
 
   it("fails when a body edit is not observable after saving", async () => {
     vi.useFakeTimers();
@@ -438,9 +481,8 @@ describe("edit_draft", () => {
     const pending = handler({
       account: account.email,
       id: "draft-1",
-      old_text: "<p>Old answer</p>",
-      new_text: "<p>New answer</p>",
-      format: "html",
+      old_text: "Old answer",
+      new_text: "New answer",
     });
     await vi.runAllTimersAsync();
     const result = await pending;
@@ -458,7 +500,7 @@ describe("edit_draft", () => {
 
     try {
       const originalHtml = "<p>Old answer</p>";
-      const updatedHtml = "<p>New answer</p>";
+      const updatedHtml = "<p>New answer</p>\n";
       let currentHtml = originalHtml;
       let updateCalls = 0;
       const provider = {
@@ -483,9 +525,8 @@ describe("edit_draft", () => {
       const pending = handler({
         account: account.email,
         id: "draft-1",
-        old_text: originalHtml,
-        new_text: updatedHtml,
-        format: "html",
+        old_text: "Old answer",
+        new_text: "New answer",
         new_attachments: [{ filePath }],
       });
       await vi.runAllTimersAsync();
@@ -501,7 +542,7 @@ describe("edit_draft", () => {
       expect(structured(result)).toMatchObject({
         edited: true,
         id: "draft-1",
-        draftHtml: updatedHtml,
+        draftMarkdown: "New answer",
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -559,9 +600,61 @@ describe("combined draft replacement identity", () => {
           assertCurrent(id); operations.push("add"); current = "final"; attachments = [{ id: "final-keep", name: "keep.txt" }, { id: "final-new", name }]; return { id: current, attachment: attachments[1]! };
         },
       } as unknown as EmailProvider;
-      const result = await registerHandler(provider)({ account: account.email, id: "original", old_text: "before", new_text: "after", format: "html", remove_attachments: ["original-remove"], new_attachments: [{ filePath: path }] });
-      expect(structured(result)).toEqual({ edited: true, id: "final", draftHtml: "<p>after</p>", attachments: [{ id: "final-keep", name: "keep.txt" }, { id: "final-new", name: "new.txt" }] });
+      const result = await registerHandler(provider)({ account: account.email, id: "original", old_text: "before", new_text: "after", remove_attachments: ["original-remove"], new_attachments: [{ filePath: path }] });
+      expect(structured(result)).toEqual({ edited: true, id: "final", draftMarkdown: "after", attachments: [{ id: "final-keep", name: "keep.txt" }, { id: "final-new", name: "new.txt" }] });
       expect(operations).toEqual(["remove", "update", "add"]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("Markdown draft persistence through provider normalization", () => {
+  it("edits a block and then a word without replay or losing adjacent HTML", async () => {
+    const tail = '<div class="signature">Signature</div><!--thread--><blockquote>History</blockquote>';
+    let html = '<p>Bonjour <strong>Alice</strong>.</p><p>Merci.</p>' + tail;
+    const provider = {
+      id: "outlook",
+      readEmail: vi.fn(async () => ({ id: "draft", subject: "Test", bodyHtml: html })),
+      updateDraft: vi.fn(async (_account, id, update) => {
+        const normalized = update.body!.replace(/<\/p>\n<p>/g, "</p><p>");
+        html = normalized.startsWith("<html>") ? normalized : '<html><head><meta charset="utf-8"></head><body>' + normalized + '</body></html>';
+        return { id };
+      }),
+    } as unknown as EmailProvider;
+    const handler = registerHandler(provider);
+    const block = await handler({ account: account.email, id: "draft", old_text: "Merci.", new_text: "Merci **beaucoup**.\n\nÀ bientôt." });
+    expect(structured(block)).toMatchObject({ edited: true, draftMarkdown: "Bonjour **Alice**.\n\nMerci **beaucoup**.\n\nÀ bientôt.\n\nSignature\n\n> History" });
+    const word = await handler({ account: account.email, id: "draft", old_text: "Alice", new_text: "Bob" });
+    expect(structured(word)?.draftMarkdown).toBe("Bonjour **Bob**.\n\nMerci **beaucoup**.\n\nÀ bientôt.\n\nSignature\n\n> History");
+    expect(html).toContain(tail);
+    expect(provider.updateDraft).toHaveBeenCalledTimes(2);
+    expect(structured(word)).not.toHaveProperty("draftHtml");
+  });
+
+  it.each(["Missing", "aa", "*Alice"])("rejects absent, overlapping or unsafe selection %s before all mutations", async old_text => {
+    const provider = {
+      id: "outlook",
+      readEmail: async () => ({ id: "draft", bodyHtml: "<p>aaaa <strong>Alice</strong></p>" }),
+      updateDraft: vi.fn(),
+      removeAttachmentsFromDraft: vi.fn(),
+      addAttachmentToDraft: vi.fn(),
+    } as unknown as EmailProvider;
+    const result = await registerHandler(provider)({ account: account.email, id: "draft", old_text, new_text: "Bob", remove_attachments: ["a"], new_attachments: [{ filePath: "/missing" }] });
+    expect(result).toMatchObject({ isError: true });
+    expect(provider.updateDraft).not.toHaveBeenCalled();
+    expect(provider.removeAttachmentsFromDraft).not.toHaveBeenCalled();
+    expect(provider.addAttachmentToDraft).not.toHaveBeenCalled();
+  });
+
+  it("maps literal plain-text offsets rather than interpreting HTML or Markdown", async () => {
+    let html: string | undefined;
+    const text = "Hello *Alice* <tag> & witness.";
+    const provider = {
+      id: "gmail",
+      readEmail: async () => ({ id: "draft", bodyText: text, bodyHtml: html }),
+      updateDraft: async (...[_account, id, update]: Parameters<EmailProvider["updateDraft"]>) => { html = update.body; return { id }; },
+    } as unknown as EmailProvider;
+    const result = await registerHandler(provider)({ account: account.email, id: "draft", old_text: "*Alice*", new_text: "**Bob**" });
+    expect(structured(result)).toMatchObject({ edited: true, draftMarkdown: "Hello **Bob** <tag> & witness." });
+    expect(html).toBe("<p>Hello <strong>Bob</strong> &lt;tag&gt; &amp; witness.</p>");
   });
 });

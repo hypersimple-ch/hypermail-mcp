@@ -57,6 +57,29 @@ describe("markdownToHtml", () => {
     expect(result).toContain("<p>Line 1</p>");
     expect(result).toContain("<p>Line 2</p>");
   });
+
+  it.each([
+    '<div style="color:red">Bonjour</div>',
+    "Bonjour <span>vous</span>",
+    "- <b>x</b>",
+    "> <b>x</b>",
+    "<!-- comment -->",
+  ])("rejects raw HTML: %s", (body) => {
+    expect(() => markdownToHtml(body)).toThrow(
+      new Error("Raw HTML is not supported. Use Markdown for email content."),
+    );
+  });
+
+  it.each([
+    ["`<b>x</b>`", "<p><code>&lt;b&gt;x&lt;/b&gt;</code></p>\n"],
+    ["```\n<b>x</b>\n```", "<pre><code>&lt;b&gt;x&lt;/b&gt;\n</code></pre>\n"],
+    ["<alice@example.com>", '<p><a href="mailto:alice@example.com">alice@example.com</a></p>\n'],
+    ["2 < 3", "<p>2 &lt; 3</p>\n"],
+    ["&lt;b&gt;", "<p>&lt;b&gt;</p>\n"],
+    ["Line 1\nLine 2", "<p>Line 1\nLine 2</p>\n"],
+  ])("preserves Markdown literals: %s", (body, html) => {
+    expect(markdownToHtml(body)).toBe(html);
+  });
 });
 
 describe("escapeHtml", () => {
@@ -108,250 +131,62 @@ describe("buildStyleAttr", () => {
 });
 
 describe("composeBody", () => {
-  describe("html format", () => {
-    describe("no signature, no style → pass through", () => {
-      it("returns HTML unchanged", () => {
-        const result = composeBody({
-          body: "<p>Hello world</p>",
-          format: "html",
-          includeSignature: false,
-        });
-        expect(result).toEqual({ body: "<p>Hello world</p>", isHtml: true });
-      });
-
-      it("rejects multiline plain text passed as HTML", () => {
-        expect(() =>
-          composeBody({
-            body: "Line 1\n\nLine 2",
-            format: "html",
-            includeSignature: false,
-          }),
-        ).toThrow('format: "html" requires valid HTML');
-      });
-
-      it("allows multiline HTML fragments", () => {
-        const result = composeBody({
-          body: "<p>Line 1</p>\n<p>Line 2</p>",
-          format: "html",
-          includeSignature: false,
-        });
-        expect(result).toEqual({
-          body: "<p>Line 1</p>\n<p>Line 2</p>",
-          isHtml: true,
-        });
-      });
-    });
-
-    describe("signature injection", () => {
-      it("appends HTML signature to HTML body", () => {
-        const result = composeBody({
-          body: "<p>Hello</p>",
-          format: "html",
-          signature: "<b>John Doe</b><br>CEO",
-          includeSignature: true,
-        });
-        expect(result.isHtml).toBe(true);
-        expect(result.body).toContain("<p>Hello</p>");
-        expect(result.body).toContain(
-          '<div class="signature"><b>John Doe</b><br>CEO</div>',
-        );
-      });
-
-      it("skips signature when include_signature is false", () => {
-        const result = composeBody({
-          body: "<p>Hello</p>",
-          format: "html",
-          signature: "<b>John</b>",
-          includeSignature: false,
-        });
-        expect(result).toEqual({ body: "<p>Hello</p>", isHtml: true });
-      });
-    });
-
-    describe("style injection", () => {
-      it("wraps HTML body with style div", () => {
-        const result = composeBody({
-          body: "<p>Hello</p>",
-          format: "html",
-          style: { fontFamily: "Arial", fontSize: "12pt" },
-          includeSignature: false,
-        });
-        expect(result.isHtml).toBe(true);
-        expect(result.body).toBe(
-          '<div style="font-family: Arial; font-size: 12pt"><p>Hello</p></div>',
-        );
-      });
-
-      it("does nothing for empty style", () => {
-        const result = composeBody({
-          body: "<p>Hello</p>",
-          format: "html",
-          style: {},
-          includeSignature: false,
-        });
-        expect(result).toEqual({ body: "<p>Hello</p>", isHtml: true });
-      });
-    });
-
-    describe("combined signature + style", () => {
-      it("applies style and appends signature to HTML body", () => {
-        const result = composeBody({
-          body: "<p>Hello</p>",
-          format: "html",
-          signature: "<b>John</b>",
-          style: { fontFamily: "Arial" },
-          includeSignature: true,
-        });
-        expect(result.isHtml).toBe(true);
-        expect(result.body).toContain('style="font-family: Arial"');
-        expect(result.body).toContain(
-          '<div class="signature"><b>John</b></div>',
-        );
-      });
-
-      it("applies style only when include_signature is false", () => {
-        const result = composeBody({
-          body: "<p>Hello</p>",
-          format: "html",
-          signature: "<b>John</b>",
-          style: { fontFamily: "Arial" },
-          includeSignature: false,
-        });
-        expect(result.isHtml).toBe(true);
-        expect(result.body).toContain("font-family: Arial");
-        expect(result.body).not.toContain("signature");
-      });
+  it("converts paragraphs and emphasis to HTML", () => {
+    expect(composeBody({
+      body: "Bonjour **Alice**\n\nMerci.",
+      includeSignature: false,
+    })).toEqual({
+      body: "<p>Bonjour <strong>Alice</strong></p>\n<p>Merci.</p>\n",
+      isHtml: true,
     });
   });
 
-  describe("markdown format", () => {
-    it("converts markdown to HTML when no signature/style", () => {
-      const result = composeBody({
-        body: "Hello **world**",
-        format: "markdown",
-        includeSignature: false,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain("<strong>world</strong>");
-    });
-
-    it("converts multiline plain text markdown to paragraphs", () => {
-      const result = composeBody({
-        body: "Line 1\n\nLine 2",
-        format: "markdown",
-        includeSignature: false,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain("<p>Line 1</p>");
-      expect(result.body).toContain("<p>Line 2</p>");
-    });
-
-    it("converts markdown and appends signature", () => {
-      const result = composeBody({
-        body: "Hello **world**",
-        format: "markdown",
-        signature: "<b>John</b>",
-        includeSignature: true,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain("<strong>world</strong>");
-      expect(result.body).toContain(
-        '<div class="signature"><b>John</b></div>',
-      );
-    });
-
-    it("converts markdown and wraps with style", () => {
-      const result = composeBody({
-        body: "Hello *world*",
-        format: "markdown",
-        style: { fontFamily: "Arial", fontSize: "12pt" },
-        includeSignature: false,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain("font-family: Arial; font-size: 12pt");
-      expect(result.body).toContain("<em>world</em>");
-    });
-
-    it("converts markdown with style + signature", () => {
-      const result = composeBody({
-        body: "Hello **world**",
-        format: "markdown",
-        signature: "<b>John</b>",
-        style: { fontFamily: "Arial" },
-        includeSignature: true,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain("<strong>world</strong>");
-      expect(result.body).toContain('style="font-family: Arial"');
-      expect(result.body).toContain(
-        '<div class="signature"><b>John</b></div>',
-      );
-    });
+  it("preserves the saved HTML signature, including inline images", () => {
+    const signature = '<div><img src="cid:logo"></div>';
+    expect(composeBody({
+      body: "Hello **world**",
+      signature,
+      includeSignature: true,
+    }).body).toBe(
+      `<p>Hello <strong>world</strong></p>\n\n<div class="signature">${signature}</div>`,
+    );
   });
 
-  describe("edge cases", () => {
-    it("handles empty body with signature", () => {
-      const result = composeBody({
-        body: "",
-        format: "html",
-        signature: "<b>John</b>",
-        includeSignature: true,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain(
-        '<div class="signature"><b>John</b></div>',
-      );
-    });
+  it("applies styles independently of signature inclusion", () => {
+    expect(composeBody({
+      body: "Hello",
+      signature: "<b>John</b>",
+      style: { fontFamily: "Arial", fontSize: "12pt", fontColor: "#333333" },
+      includeSignature: false,
+    }).body).toBe(
+      '<div style="font-family: Arial; font-size: 12pt; color: #333333"><p>Hello</p>\n</div>',
+    );
+  });
 
-    it("handles empty body with markdown format and signature", () => {
-      const result = composeBody({
-        body: "",
-        format: "markdown",
-        signature: "<b>John</b>",
-        includeSignature: true,
-      });
-      expect(result.isHtml).toBe(true);
-      expect(result.body).toContain(
-        '<div class="signature"><b>John</b></div>',
-      );
-    });
+  it("applies styles before appending the saved signature", () => {
+    expect(composeBody({
+      body: "Hello",
+      signature: "<b>John</b>",
+      style: { fontFamily: "Arial" },
+      includeSignature: true,
+    }).body).toBe(
+      '<div style="font-family: Arial"><p>Hello</p>\n</div>\n<div class="signature"><b>John</b></div>',
+    );
+  });
 
-    it("handles empty signature (treated as no signature)", () => {
-      const result = composeBody({
-        body: "<p>Hello</p>",
-        format: "html",
-        signature: "",
-        includeSignature: true,
-      });
-      expect(result).toEqual({ body: "<p>Hello</p>", isHtml: true });
-    });
+  it("handles empty content with a saved signature", () => {
+    expect(composeBody({
+      body: "",
+      signature: "<b>John</b>",
+      includeSignature: true,
+    }).body).toBe('\n<div class="signature"><b>John</b></div>');
+  });
 
-    it("passes through unchanged when includeSignature true but signature is undefined", () => {
-      const result = composeBody({
-        body: "<p>Hello</p>",
-        format: "html",
-        includeSignature: true,
-        // no signature key at all
-      });
-      expect(result).toEqual({ body: "<p>Hello</p>", isHtml: true });
-    });
-
-    it("always returns isHtml: true for html format", () => {
-      const result = composeBody({
-        body: "<p>Hello</p>",
-        format: "html",
-        includeSignature: false,
-      });
-      expect(result.isHtml).toBe(true);
-    });
-
-    it("always returns isHtml: true for markdown format", () => {
-      const result = composeBody({
-        body: "Hello **world**",
-        format: "markdown",
-        includeSignature: false,
-      });
-      expect(result.isHtml).toBe(true);
-    });
+  it.each(["", undefined])("omits absent signatures: %s", (signature) => {
+    expect(composeBody({
+      body: "Hello",
+      signature,
+      includeSignature: true,
+    })).toEqual({ body: "<p>Hello</p>\n", isHtml: true });
   });
 });

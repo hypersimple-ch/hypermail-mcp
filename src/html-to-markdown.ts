@@ -10,7 +10,7 @@ export function htmlToMarkdown(html: string): string {
 /** Pick the right body for the requested format. */
 export function selectBody(
   msg: { bodyHtml?: string; bodyText?: string },
-  format: "markdown" | "html" | "text",
+  format: "markdown" | "html",
 ): string {
   switch (format) {
     case "markdown": {
@@ -21,11 +21,6 @@ export function selectBody(
     case "html": {
       if (msg.bodyHtml) return msg.bodyHtml;
       if (msg.bodyText) return msg.bodyText;
-      return "";
-    }
-    case "text": {
-      if (msg.bodyText) return msg.bodyText;
-      if (msg.bodyHtml) return msg.bodyHtml.replace(/<[^>]*>/g, "");
       return "";
     }
   }

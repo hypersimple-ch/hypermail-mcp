@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerBrowseTools } from "./browse.js";
 import type { ResolvedTools } from "../config.js";
@@ -352,5 +355,38 @@ describe("browse web links", () => {
       path: "/tmp/report.pdf",
       webUrl: "https://outlook.office.com/mail/message-1",
     });
+  });
+});
+
+describe("read_email MCP format contract", () => {
+  it("defaults to Markdown, exposes explicit HTML and rejects text before provider reads", async () => {
+    const rec = account("user@example.com");
+    let body: { bodyHtml?: string; bodyText?: string } = { bodyHtml: "<p>Hello <strong>Alice</strong>.</p>" };
+    const readEmail = vi.fn(async () => ({ id: "message", subject: "Subject", ...body }));
+    const backend = { id: "imap", readEmail } as unknown as EmailProvider;
+    const server = new McpServer({ name: "read-contract", version: "1" });
+    registerBrowseTools(server, { store: store([rec]), registry: registry([rec], { [rec.email]: backend }), tools });
+    const client = new Client({ name: "test", version: "1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const args = { account: rec.email, id: "message" };
+      const markdown = await client.callTool({ name: "read_email", arguments: args });
+      expect(markdown.structuredContent).toMatchObject({ body: "Hello **Alice**.", bodyFormat: "markdown" });
+      const html = await client.callTool({ name: "read_email", arguments: { ...args, format: "html" } });
+      expect(html.structuredContent).toMatchObject({ body: body.bodyHtml, bodyFormat: "html" });
+      const calls = readEmail.mock.calls.length;
+      const invalid = await client.callTool({ name: "read_email", arguments: { ...args, format: "text" } });
+      expect(invalid.isError).toBe(true);
+      expect(readEmail).toHaveBeenCalledTimes(calls);
+      body = { bodyText: "Literal *text* <not-html>" };
+      expect((await client.callTool({ name: "read_email", arguments: args })).structuredContent).toMatchObject({ body: body.bodyText, bodyFormat: "markdown" });
+      body = {};
+      expect((await client.callTool({ name: "read_email", arguments: args })).structuredContent).toMatchObject({ body: "", bodyFormat: "markdown" });
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });

@@ -8,6 +8,8 @@ import type { Registry } from "../providers/registry.js";
 import type { EmailProvider, EmailReference, SendInput } from "../providers/types.js";
 import type { ResolvedTools } from "../config.js";
 import type { Logger } from "../logger.js";
+import { selectBody } from "../html-to-markdown.js";
+import { applyMarkdownDraftEdit, applyPlainTextDraftEdit } from "./markdown-draft-edit.js";
 import { MIME_TYPES } from "./mime-types.js";
 import {
   ok,
@@ -15,7 +17,6 @@ import {
   errMsg,
   composeBody,
   shouldRegister,
-  applyExactTextEdit,
   emailReferenceOutputSchema,
 } from "./shared.js";
 import {
@@ -71,7 +72,6 @@ export function registerComposeTools(
       }
       const composed = composeBody({
         body: args.body,
-        format: args.format,
         signature: account.signature,
         style: account.style,
         includeSignature: args.include_signature,
@@ -80,7 +80,7 @@ export function registerComposeTools(
         tool: toolName,
         account: account.email,
         provider: provider.id,
-        format: args.format,
+        format: "markdown",
         isHtml: composed.isHtml,
         includeSignature: args.include_signature,
       });
@@ -141,17 +141,17 @@ export function registerComposeTools(
           if (draft.webUrlUnavailableReason !== undefined) {
             result.webUrlUnavailableReason = draft.webUrlUnavailableReason;
           }
-          result.draftHtml = draft.bodyHtml;
+          result.draftMarkdown = selectBody(draft, "markdown");
           logger?.debug("compose", "draftReadbackSuccess", {
             tool: toolName,
             account: account.email,
             provider: provider.id,
-            hasDraftHtml: draft.bodyHtml !== undefined,
+            hasDraftBody: draft.bodyHtml !== undefined || draft.bodyText !== undefined,
           });
         } catch (readErr) {
           const message = errMsg(readErr);
           result.warning =
-            "Draft was created, but reading it back for draftHtml failed. " +
+            "Draft was created, but reading it back for draftMarkdown failed. " +
             "Use read_email with the returned id to inspect it, or continue with send_draft if appropriate.";
           result.draftReadbackError = message;
           logger?.debug("compose", "draftReadbackError", {
@@ -185,8 +185,9 @@ export function registerComposeTools(
       "send_email",
       {
         description:
-          "Send an email from the given account. Appends the " +
-          "account's signature (HTML) and applies style preferences when " +
+          "Send an email from the given account using Markdown only; raw HTML " +
+          "is not supported. Use a blank line between paragraphs. Applies account " +
+          "style preferences and appends the saved HTML signature when " +
           "`include_signature` is true. Returns an error if " +
           "`include_signature` is true but no signature is configured. " +
           "When `inReplyTo` is set, sends as a reply (or reply-all) which " +
@@ -214,7 +215,7 @@ export function registerComposeTools(
   const draftEmailOutputSchema = {
     draft: z.literal(true),
     ...emailReferenceOutputSchema.shape,
-    draftHtml: z.string().optional(),
+    draftMarkdown: z.string().optional(),
     warning: z.string().optional(),
     draftReadbackError: z.string().optional(),
   };
@@ -225,14 +226,13 @@ export function registerComposeTools(
       {
         description:
           "Create a draft email from the given account without sending it. " +
+          "Body content must be Markdown only, without raw HTML; use a blank line between paragraphs. " +
           "Works identically to send_email — appends signature when " +
           "`include_signature` is true, applies style, and supports replies " +
           "and forwards — but saves the message to the Drafts folder " +
           "instead of sending. Returns the draft message ID and the draft's " +
-          "HTML body content (`draftHtml`). Before sending the draft, " +
-          "inspect `draftHtml` to verify the draft looks correct: no " +
-          "duplicate signature blocks, no broken or missing inline images, " +
-          "no malformed HTML, and no other formatting issues. Returns the " +
+          "Markdown body (`draftMarkdown`). Copy selections from this complete current body " +
+          "or read_email in Markdown. Explicit HTML remains available through read_email(format: 'html'). Returns the " +
           "draft's shareable `webUrl` when available; recipients must have " +
           "access to the mailbox to open it.",
         inputSchema: sendEmailSchema,
@@ -253,7 +253,7 @@ export function registerComposeTools(
   const editDraftOutputSchema = {
     edited: z.literal(true),
     ...emailReferenceOutputSchema.shape,
-    draftHtml: z.string().optional(),
+    draftMarkdown: z.string().optional(),
     attachments: z.array(z.object({ id: z.string(), name: z.string(), contentType: z.string().optional(), size: z.number().optional() })).optional(),
   };
 
@@ -265,12 +265,12 @@ export function registerComposeTools(
           "Edit an existing draft email by ID. Only the fields you provide " +
           "are updated — unmentioned fields stay unchanged. Body edits work " +
           "like an exact text edit: provide `old_text` copied from the current " +
-          "draft HTML and `new_text` to replace that exact section. The match " +
+          "draft Markdown (draftMarkdown or a complete current read_email Markdown body) and `new_text` in Markdown only, without raw HTML, to replace that exact section. " +
+          "Use a blank line between paragraphs. The match " +
           "must occur exactly once, and all unselected content — including " +
           "reply/forward history — is preserved. Deprecated `body` is accepted " +
           "only as an alias for `new_text` when `old_text` is also provided. " +
-          "Returns the draft ID and the draft's updated HTML body content " +
-          "(`draftHtml`). Before sending, inspect `draftHtml` to verify the draft looks correct. " +
+          "Returns the draft ID and the draft's updated Markdown body (`draftMarkdown`). " +
           "Does not support changing `inReplyTo` or `forwardMessageId` — " +
           "those are set at creation time via `draft_email`. Returns the " +
           "draft's shareable `webUrl` when available; recipients must have " +
@@ -314,20 +314,17 @@ export function registerComposeTools(
           let bodyExpectation: BodyEditExpectation | undefined;
           if (replacementText !== undefined) {
             const existing = await provider.readEmail(account, a.id);
-            const existingBody = existing.bodyHtml ?? existing.bodyText ?? "";
-            const composed = composeBody({
-              body: replacementText,
-              format: a.format ?? "html",
+            const options = {
               signature: account.signature,
               style: account.style,
               includeSignature: !!a.include_signature,
-            });
-            bodyPayload = applyExactTextEdit(existingBody, a.old_text ?? "", composed.body);
-            isHtmlPayload = composed.isHtml;
+            };
+            bodyPayload = existing.bodyHtml
+              ? applyMarkdownDraftEdit(existing.bodyHtml, a.old_text ?? "", replacementText, options)
+              : applyPlainTextDraftEdit(existing.bodyText ?? "", a.old_text ?? "", replacementText, options);
+            isHtmlPayload = true;
             bodyExpectation = {
               expectedBody: bodyPayload,
-              oldText: a.old_text ?? "",
-              replacementBody: composed.body,
             };
           }
 
@@ -431,7 +428,7 @@ export function registerComposeTools(
           const result = {
             edited: true as const,
             ...reference,
-            ...(draft ? { draftHtml: draft.bodyHtml ?? "" } : {}),
+            ...(draft ? { draftMarkdown: selectBody(draft, "markdown") } : {}),
             ...(draft ? { attachments: draft.attachments } : {}),
           };
           return ok(result, result);

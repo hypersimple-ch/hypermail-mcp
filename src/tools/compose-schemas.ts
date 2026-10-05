@@ -8,14 +8,9 @@ export const sendEmailSchema = z.object({
   cc: z.array(emailAddrSchema).optional(),
   bcc: z.array(emailAddrSchema).optional(),
   subject: z.string(),
-  body: z.string(),
-  format: z
-    .enum(["html", "markdown"])
-    .describe(
-      "Body format. 'html' sends the body as-is (must be valid HTML); " +
-        "multiline plain text with format='html' is rejected, so use 'markdown' for paragraphs or add tags like <p>/<br>. " +
-        "'markdown' converts the body from Markdown to HTML for clean rendering on the recipient side.",
-    ),
+  body: z.string().describe(
+    "Email content in Markdown only; raw HTML is not supported. Use a blank line between paragraphs.",
+  ),
   include_signature: z
     .boolean()
     .describe(
@@ -80,33 +75,25 @@ export const editDraftSchema = z.object({
     .min(1)
     .optional()
     .describe(
-      "Exact current HTML section to replace in the draft body. " +
-        "Copy this from `draftHtml` or from `read_email` with format='html'. " +
-        "Must match exactly once; unselected content is preserved.",
+      "Exact current Markdown word, phrase or block to replace in the draft body. " +
+        "Copy from draftMarkdown or a complete current read_email Markdown body, never a truncated preview. " +
+        "Must match exactly once; unselected HTML is preserved. Unsafe structural selections are rejected.",
     ),
   new_text: z
     .string()
     .optional()
     .describe(
-      "Replacement content for `old_text`. The replacement is composed " +
-        "using `format` and `include_signature`, then inserted exactly " +
-        "where `old_text` matched.",
+      "Replacement content for `old_text` in Markdown only; raw HTML is not supported. " +
+        "Use a blank line between paragraphs. The replacement is converted to HTML " +
+        "with optional `include_signature`, then inserted where `old_text` matched.",
     ),
   body: z
     .string()
     .optional()
     .describe(
-      "Deprecated alias for `new_text`. Body-only full replacement is " +
+      "Deprecated alias for `new_text`, in Markdown only; raw HTML is not supported. " +
+        "Use a blank line between paragraphs. Body-only full replacement is " +
         "not supported; provide `old_text` with this field.",
-    ),
-  format: z
-    .enum(["html", "markdown"])
-    .optional()
-    .describe(
-      "Replacement format. Only meaningful when `new_text` or deprecated " +
-        "`body` is also provided. 'html' inserts the replacement as-is " +
-        "(must be valid HTML); multiline plain text with format='html' is rejected, so use 'markdown' for paragraphs or add tags like <p>/<br>. " +
-        "'markdown' converts the replacement from Markdown to HTML.",
     ),
   include_signature: z
     .boolean()

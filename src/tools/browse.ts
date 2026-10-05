@@ -204,7 +204,7 @@ export function registerBrowseTools(
     webUrl: z.string().url().optional(),
     webUrlUnavailableReason: z.string().optional(),
     body: z.string(),
-    bodyFormat: z.enum(["markdown", "html", "text"]),
+    bodyFormat: z.enum(["markdown", "html"]),
   });
 
   if (shouldRegister("read_email", tools)) {
@@ -221,12 +221,12 @@ export function registerBrowseTools(
           account: z.string().email(),
           id: z.string().min(1),
           format: z
-            .enum(["markdown", "html", "text"])
+            .enum(["markdown", "html"])
             .default("markdown")
             .optional()
             .describe(
               "Output body format. 'markdown' converts HTML to Markdown (default), " +
-                "'html' returns the raw HTML, 'text' returns plain text.",
+                "'html' returns the raw HTML. Plain-text-only messages retain their original body.",
             ),
         }),
         outputSchema: readEmailOutputSchema,
