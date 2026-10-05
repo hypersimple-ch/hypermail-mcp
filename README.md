@@ -199,6 +199,37 @@ Microsoft Graph. IMAP (any IMAP server) supported via `imapflow` + `nodemailer`.
 Gmail supported via Google OAuth authorization-code flow with local loopback or
 hosted callbacks plus remote-safe manual completion.
 
+## Public website
+
+`website/` is the standalone static site for Hypermail and Hypermail MCP:
+French at `index.html`, English at `en/index.html`, with privacy, terms and
+Google OAuth setup pages in both languages. No frontend build, JavaScript,
+external fonts, analytics or cookies are required. Internal links are relative,
+so the directory can also be published under a subpath.
+
+The visual foundations match the Hypermail application's approved design
+system: off-white `#F6F6F5`, white surfaces, charcoal `#252525`, thin `#E2E2E0`
+borders, system typography, 8px controls and 12px cards. Green is reserved for
+the available-product status, not branding. The homepage includes a translated
+MCP connection diagram and an explicitly conceptual inbox preview.
+Landing-page composition was informed by this
+[private Lazyweb reference collection](https://www.lazyweb.com/agentic-search/7e65437f-7831-4322-8e05-e507bd0e1f0e);
+competitor privacy claims and branding are not reused.
+
+Preview from the repository root:
+
+```bash
+python3 -m http.server 4173 --bind 127.0.0.1 --directory website
+```
+
+Open `http://127.0.0.1:4173`. Review the layout at 375px and 1440px before
+publishing. Deploy only the contents of `website/` to your chosen HTTPS host;
+no production domain or host is configured here. Once published, use the full
+HTTPS homepage, privacy and terms URLs in Google Cloud and verify domain
+ownership. See the site's Google OAuth guide for the field mapping and
+restricted-scope requirements; the pages alone do not guarantee Google approval.
+The static site does not serve the MCP endpoint or its OAuth callback.
+
 ## Why
 
 - Existing Outlook/M365 MCP servers (e.g. `@softeria/ms-365-mcp-server`) expose

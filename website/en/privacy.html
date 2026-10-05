@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Website and Hypermail MCP data: access, sharing, retention and deletion.">
+  <meta name="theme-color" content="#f6f6f5">
+  <title>Privacy — Hypermail</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="alternate" hreflang="fr" href="../privacy.html">
+  <link rel="alternate" hreflang="en" href="privacy.html">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="brand" href="index.html" aria-label="Hypermail — Home"><span class="brand-mark" aria-hidden="true">h.</span> hypermail</a>
+    <nav aria-label="Main navigation"><a href="index.html#projects">Projects</a><a href="gmail-setup.html">Set up Gmail</a><a class="nav-contact" href="mailto:mateo.tiedra@hypersimple.ch">Contact <span aria-hidden="true">↗</span></a></nav>
+    <nav class="languages" aria-label="Language"><a href="../privacy.html" lang="fr">Français</a><a href="privacy.html" lang="en" aria-current="page">English</a></nav>
+  </header>
+  <main id="main" class="editorial wrap">
+    <h1>Privacy</h1>
+    <p class="updated">Written on 5 October 2026 · Publisher: Hypersimple.</p>
+    <h2>Visiting the website</h2>
+    <p>This informational website presents Hypermail and Hypermail MCP. It includes no trackers, cookies, forms, analytics or access to Gmail. The domain and hosting provider have not yet been selected. Once published, the hosting provider may process technical connection logs; their configuration and retention will depend on the selected service.</p>
+    <h2>Using Hypermail MCP</h2>
+    <p>Hypermail MCP is an open-source server running on a machine or infrastructure chosen by its operator. It processes the account address, permissions and tokens, messages, recipients, folders or labels and attachments needed for the requested tools: reading, searching, composing, sending and organizing.</p>
+    <p>For Gmail, the default scope <code>https://www.googleapis.com/auth/gmail.modify</code> is restricted. Access is not read-only: tools can send messages, create or edit drafts, archive, move, trash and change message states or labels. Review your agent’s actions before authorizing them.</p>
+    <h2>Storage, recipients and data flow</h2>
+    <p>Account credentials and tokens are encrypted at rest in the instance’s storage, on the operator’s machine or infrastructure — not necessarily on the end user’s machine. Debug logs may contain email addresses, identifiers and synchronization metadata.</p>
+    <p>The flow is: email provider → MCP instance → MCP client → optional AI provider. Hypersimple does not automatically gain access to a self-hosted installation. Processing and retention by the client, AI provider and operator depend on their policies and configurations. This website does not guarantee the absence of logging, training or international transfers by those third parties.</p>
+    <h2>Google data and Limited Use</h2>
+    <p>In covered uses, data obtained from Google must be used only for explicitly requested features, in accordance with the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including its Limited Use requirements. Using that data for advertising, selling it or using it to train generalized AI models is prohibited in those uses.</p>
+    <p>These are usage rules for operators and clients to follow, not a technical control guaranteed by the software or a Google certification. Choose a client and AI provider compatible with these obligations before transmitting Google data.</p>
+    <h2>Retention, removal and revocation</h2>
+    <p>Stored accounts and permissions remain in the instance’s storage until removed by the operator. The <code>remove_account</code> tool removes an account from that instance. To revoke Google access, also use your <a href="https://myaccount.google.com/connections">Google account connections</a>. Local removal and Google revocation are separate steps; do not assume that local removal alone revokes Google access.</p>
+    <p>Message copies in the AI client, downloaded attachments, backups and logs are not automatically deleted by <code>remove_account</code>. Deletion is the responsibility of the relevant systems and operators.</p>
+    <h2>Contact</h2>
+    <p>For questions and requests about data actually held by Hypersimple: <a href="mailto:mateo.tiedra@hypersimple.ch">mateo.tiedra@hypersimple.ch</a>. For a third-party instance, also contact its operator and the relevant services.</p>
+  </main>
+  <footer class="site-footer wrap"><div><a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">h.</span> hypermail</a><p>A project by Hypersimple.</p></div><nav aria-label="Footer links"><a href="privacy.html">Privacy</a><a href="terms.html">Terms of use</a><a href="gmail-setup.html">Google OAuth</a><a href="mailto:mateo.tiedra@hypersimple.ch">Contact</a></nav><span class="copyright">© 2026 Hypermail</span></footer>
+</body>
+</html>

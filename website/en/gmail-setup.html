@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Google Cloud branding fields and Gmail configuration for Hypermail MCP.">
+  <meta name="theme-color" content="#f6f6f5">
+  <title>Set up Google OAuth — Hypermail</title>
+  <link rel="icon" href="../favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="alternate" hreflang="fr" href="../gmail-setup.html">
+  <link rel="alternate" hreflang="en" href="gmail-setup.html">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header wrap">
+    <a class="brand" href="index.html" aria-label="Hypermail — Home"><span class="brand-mark" aria-hidden="true">h.</span> hypermail</a>
+    <nav aria-label="Main navigation"><a href="index.html#projects">Projects</a><a href="gmail-setup.html">Set up Gmail</a><a class="nav-contact" href="mailto:mateo.tiedra@hypersimple.ch">Contact <span aria-hidden="true">↗</span></a></nav>
+    <nav class="languages" aria-label="Language"><a href="../gmail-setup.html" lang="fr">Français</a><a href="gmail-setup.html" lang="en" aria-current="page">English</a></nav>
+  </header>
+  <main id="main" class="editorial wrap">
+    <h1>Set up Google OAuth</h1>
+    <p>This guide separates Google Cloud’s public branding from the MCP server’s Gmail connection. This website never asks for a secret.</p>
+    <h2>Branding fields for the Hypersimple application</h2>
+    <div class="table-scroll"><table><caption>Google Cloud field mapping</caption><thead><tr><th scope="col">Google Cloud field</th><th scope="col">Value or page</th></tr></thead><tbody>
+      <tr><th scope="row">App name</th><td>Hypermail MCP</td></tr>
+      <tr><th scope="row">Support email and developer contact</th><td><a href="mailto:mateo.tiedra@hypersimple.ch">mateo.tiedra@hypersimple.ch</a></td></tr>
+      <tr><th scope="row">Application home page</th><td><a href="index.html">Home — index.html</a></td></tr>
+      <tr><th scope="row">Privacy policy</th><td><a href="privacy.html">Privacy — privacy.html</a></td></tr>
+      <tr><th scope="row">Terms of Service</th><td><a href="terms.html">Terms — terms.html</a></td></tr>
+    </tbody></table></div>
+    <p>After publishing on your chosen domain, enter the full HTTPS URLs of these pages in Google Cloud, then declare and verify ownership of the domain with Google. No production domain has been chosen yet.</p>
+    <p>If you create your own OAuth application, use your own contacts and a policy reflecting your deployment. Hypersimple’s pages do not implicitly cover third-party installations.</p>
+    <h2>Gmail checklist</h2>
+    <ol><li>Enable Gmail API in your Google Cloud project.</li><li>Configure the application’s audience and test users.</li><li>Declare the restricted scope <code>https://www.googleapis.com/auth/gmail.modify</code>.</li><li>Create a <strong>Desktop</strong> OAuth client for local use, or a <strong>Web</strong> client for a hosted server.</li></ol>
+    <h2>MCP server configuration</h2>
+    <p>Set <code>HYPERMAIL_GMAIL_CLIENT_ID</code> and <code>HYPERMAIL_GMAIL_CLIENT_SECRET</code> if a secret is issued for that client type. Keep these values in the instance’s secure configuration, never in website files.</p>
+    <p>Locally, the default callback is <code>http://127.0.0.1:33333/callback</code>. For a hosted server, set <code>HYPERMAIL_GMAIL_REDIRECT_URI</code> to that server’s full HTTPS callback URL and register exactly the same URI in the Google Web client. The hosted path is <code>/oauth/gmail/callback</code>.</p>
+    <p>This callback belongs to the MCP server, not the static website. The HTTP MCP server requires a private network or an authenticating and authorizing proxy; do not publish its port without protection. See the repository’s <a href="https://github.com/hypersimple-ch/hypermail-mcp#gmail">Gmail guide</a> for connecting an account.</p>
+    <h2>Before Google production use</h2>
+    <p><code>gmail.modify</code> is a restricted scope. These pages alone do not guarantee compliance, verification or Google approval. Depending on deployment and usage, additional verification or a security assessment may apply. See the requirements for <a href="https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification">restricted scope verification</a> and <a href="https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance">OAuth policy compliance</a>.</p>
+  </main>
+  <footer class="site-footer wrap"><div><a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">h.</span> hypermail</a><p>A project by Hypersimple.</p></div><nav aria-label="Footer links"><a href="privacy.html">Privacy</a><a href="terms.html">Terms of use</a><a href="gmail-setup.html">Google OAuth</a><a href="mailto:mateo.tiedra@hypersimple.ch">Contact</a></nav><span class="copyright">© 2026 Hypermail</span></footer>
+</body>
+</html>

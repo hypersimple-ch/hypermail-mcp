@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Données du site et de Hypermail MCP : accès, partage, conservation et suppression.">
+  <meta name="theme-color" content="#f6f6f5">
+  <title>Confidentialité — Hypermail</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="alternate" hreflang="fr" href="privacy.html">
+  <link rel="alternate" hreflang="en" href="en/privacy.html">
+</head>
+<body>
+  <a class="skip-link" href="#main">Aller au contenu</a>
+  <header class="site-header wrap">
+    <a class="brand" href="index.html" aria-label="Hypermail — Accueil"><span class="brand-mark" aria-hidden="true">h.</span> hypermail</a>
+    <nav aria-label="Navigation principale"><a href="index.html#projects">Les projets</a><a href="gmail-setup.html">Configurer Gmail</a><a class="nav-contact" href="mailto:mateo.tiedra@hypersimple.ch">Contact <span aria-hidden="true">↗</span></a></nav>
+    <nav class="languages" aria-label="Langue"><a href="privacy.html" lang="fr" aria-current="page">Français</a><a href="en/privacy.html" lang="en">English</a></nav>
+  </header>
+  <main id="main" class="editorial wrap">
+    <h1>Confidentialité</h1>
+    <p class="updated">Rédigée le 5 octobre 2026 · Éditeur : Hypersimple.</p>
+    <h2>Visite du site</h2>
+    <p>Ce site vitrine présente Hypermail et Hypermail MCP. Il n’intègre aucun traceur, cookie, formulaire, analytics ni accès à Gmail. Le domaine et l’hébergeur ne sont pas encore choisis. Lors de la publication, l’hébergeur pourra traiter des journaux techniques de connexion ; leur configuration et leur conservation dépendront du service retenu.</p>
+    <h2>Utilisation de Hypermail MCP</h2>
+    <p>Hypermail MCP est un serveur open source exécuté sur une machine ou une infrastructure choisie par son opérateur. Il traite l’adresse du compte, les autorisations et jetons, les messages, destinataires, dossiers ou libellés et pièces jointes nécessaires aux outils demandés : lecture, recherche, rédaction, envoi et organisation.</p>
+    <p>Pour Gmail, le scope par défaut <code>https://www.googleapis.com/auth/gmail.modify</code> est restreint. L’accès ne se limite pas à la lecture : les outils peuvent envoyer des messages, créer ou modifier des brouillons, archiver, déplacer, mettre à la corbeille et modifier les états ou libellés des messages. Vérifiez les actions de votre agent avant de les autoriser.</p>
+    <h2>Stockage, destinataires et circulation des données</h2>
+    <p>Les identifiants et jetons de compte sont chiffrés au repos dans le stockage de l’instance, sur la machine ou l’infrastructure de l’opérateur — pas nécessairement chez l’utilisateur final. Les journaux de débogage peuvent contenir des adresses email, identifiants et métadonnées de synchronisation.</p>
+    <p>Le flux est : fournisseur de messagerie → instance MCP → client MCP → fournisseur d’IA éventuel. Hypersimple n’acquiert pas automatiquement l’accès à une installation autohébergée. Les traitements et durées de conservation du client, du fournisseur d’IA et de l’opérateur dépendent de leurs politiques et configurations. Ce site ne garantit ni absence de journaux, ni absence d’entraînement, ni absence de transferts internationaux chez ces tiers.</p>
+    <h2>Données Google et Limited Use</h2>
+    <p>Dans les usages couverts, les données issues de Google doivent servir uniquement aux fonctionnalités explicitement demandées, conformément à la <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, notamment ses obligations Limited Use. Leur utilisation pour la publicité, leur vente et leur utilisation pour entraîner des modèles d’IA généralisés sont interdites dans ces usages.</p>
+    <p>Il s’agit de règles d’utilisation à respecter par les opérateurs et clients, non d’un contrôle technique garanti par le logiciel ni d’une certification Google. Choisissez un client et un fournisseur d’IA compatibles avec ces obligations avant de transmettre des données Google.</p>
+    <h2>Conservation, retrait et révocation</h2>
+    <p>Les comptes et autorisations enregistrés restent dans le stockage de l’instance jusqu’à leur retrait par l’opérateur. L’outil <code>remove_account</code> retire un compte de cette instance. Pour révoquer l’accès Google, utilisez également les <a href="https://myaccount.google.com/connections">connexions de votre compte Google</a>. Le retrait local et la révocation Google sont des démarches distinctes ; ne supposez pas que le retrait local révoque à lui seul l’accès Google.</p>
+    <p>Les copies de messages dans le client IA, les pièces jointes téléchargées, les sauvegardes et les journaux ne sont pas automatiquement effacés par <code>remove_account</code>. Leur suppression relève des systèmes et opérateurs concernés.</p>
+    <h2>Contact</h2>
+    <p>Pour les questions et demandes relatives aux données effectivement détenues par Hypersimple : <a href="mailto:mateo.tiedra@hypersimple.ch">mateo.tiedra@hypersimple.ch</a>. Pour une instance tierce, contactez également son opérateur et les services concernés.</p>
+  </main>
+  <footer class="site-footer wrap"><div><a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">h.</span> hypermail</a><p>Un projet par Hypersimple.</p></div><nav aria-label="Liens de pied de page"><a href="privacy.html">Confidentialité</a><a href="terms.html">Conditions d’utilisation</a><a href="gmail-setup.html">Google OAuth</a><a href="mailto:mateo.tiedra@hypersimple.ch">Contact</a></nav><span class="copyright">© 2026 Hypermail</span></footer>
+</body>
+</html>
