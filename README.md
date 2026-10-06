@@ -200,6 +200,14 @@ Microsoft Graph. IMAP (any IMAP server) supported via `imapflow` + `nodemailer`.
 Gmail supported via Google OAuth authorization-code flow with local loopback or
 hosted callbacks plus remote-safe manual completion.
 
+## Public website
+
+The standalone bilingual website is maintained in
+[`hypersimple-ch/hypermail`](https://github.com/hypersimple-ch/hypermail/tree/feat/public-website/website),
+not this MCP runtime repository. It is published at
+<https://hypermail.hypersimple.ch/> with privacy, terms and Google OAuth setup
+pages. The static site does not serve the MCP endpoint or its OAuth callback.
+
 ## Why
 
 - Existing Outlook/M365 MCP servers (e.g. `@softeria/ms-365-mcp-server`) expose
