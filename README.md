@@ -1,9 +1,456 @@
-# hypermail-mcp
+<h1 align="center">Hypermail MCP</h1>
 
-A **Model Context Protocol** server that lets an agent operate any of the user's
-inboxes through a single, unified tool surface.
+<p align="center">
+  <strong>All your mailboxes. One MCP server for AI agents.</strong>
+</p>
 
-## v0.7.28 — Correctness fixes
+<p align="center">
+  <a href="https://www.npmjs.com/package/hypermail-mcp"><img src="https://img.shields.io/npm/v/hypermail-mcp?style=flat-square&amp;color=222222" alt="npm version"></a>
+  <a href="https://github.com/hypersimple-ch/hypermail-mcp/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-222222?style=flat-square" alt="MIT license"></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D20-222222?style=flat-square" alt="Node.js 20 or newer"></a>
+</p>
+
+<p align="center">
+  <a href="https://hypermail.hypersimple.ch">Website</a> ·
+  <a href="https://github.com/hypersimple-ch/hypermail-mcp">GitHub</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#tools">Tool reference</a>
+</p>
+
+**Hypermail MCP is an open-source email server that lets AI agents manage Gmail,
+Outlook, Microsoft 365, and IMAP mailboxes through one unified
+[Model Context Protocol](https://modelcontextprotocol.io) interface.** Connect
+multiple personal and work accounts, then use the same tools for each mailbox.
+Pass an email address; Hypermail routes the request to the right provider.
+
+Run it on your machine or your own infrastructure. Choose the MCP-compatible
+assistant that accesses your email. The code is open under the MIT license.
+
+> **Hypermail MCP is available today.** The separate **Hypermail app** is still
+> in development. Learn about both projects on the
+> [Hypermail website](https://hypermail.hypersimple.ch).
+
+## What can your agent do?
+
+- **Read and find email** — browse inboxes, search one or all connected accounts,
+  read messages, and download attachments.
+- **Write and reply** — compose Markdown emails, reply to threads, forward
+  messages, and create or edit drafts before sending.
+- **Organize mailboxes** — archive, trash, move messages, mark them read or
+  unread, and manage folders.
+- **Work across accounts** — use one tool surface for different providers,
+  with per-account signatures and style preferences.
+- **Check for new mail** — poll for new inbox messages on your agent's schedule,
+  without a separate MCP server for each account.
+
+## Supported mailboxes
+
+| Mailbox | Connection | Setup |
+| --- | --- | --- |
+| **Gmail / Google Workspace** | Gmail API with Google OAuth | Configure your Google OAuth client, then authorize the account. [Gmail setup](#gmail) |
+| **Outlook / Microsoft 365** | Microsoft Graph with device-code sign-in | Sign in with a personal or work Microsoft account. [Outlook setup](#outlook) |
+| **IMAP mailboxes** | IMAP for reading and managing mail; SMTP for sending | Provide your provider's IMAP/SMTP settings and password or app password. [IMAP setup](#imap) |
+
+Generic IMAP support covers providers that expose IMAP/SMTP access; it does not
+mean every email service has a native API integration.
+
+## Quick start
+
+Requires **Node.js 20 or newer** and an MCP-compatible client.
+
+### 1. Install
+
+```bash
+npm install -g hypermail-mcp
+hypermail-mcp --help
+```
+
+### 2. Connect your agent
+
+For Claude Desktop or another client using `mcpServers`, add this to its MCP
+configuration. `npx` runs the package without requiring a global install.
+
+```json
+{
+  "mcpServers": {
+    "hypermail": {
+      "command": "npx",
+      "args": ["-y", "hypermail-mcp"]
+    }
+  }
+}
+```
+
+For Claude Code, use:
+
+```bash
+claude mcp add hypermail -- npx -y hypermail-mcp
+```
+
+### 3. Add a mailbox
+
+Restart or reload your MCP client, then ask your agent:
+
+> Connect my Outlook account using Hypermail.
+
+The agent calls `add_account` and guides you through sign-in. For Gmail, first
+configure your Google OAuth credentials in the server environment; for IMAP,
+provide the mailbox's connection settings. See [add-account flows](#add-account-flows)
+for each provider. Add more accounts to the same server as needed.
+
+### 4. Put it to work
+
+Try requests like these after connecting your accounts:
+
+> Search all my connected mailboxes for invoices from last month.
+
+> Draft a reply to this email from my work account. Save it for review; do not send it.
+
+> Move the selected messages to my Receipts folder and mark them as read.
+
+Your MCP client decides how to invoke tools and request approval. Configure
+that client to require confirmation for sending or destructive actions if needed.
+
+**More documentation:** [Configuration](#runtime-and-provider-configuration) ·
+[Tools](#tools) · [New-email polling](#pull-new-emails) ·
+[Account setup](#add-account-flows) · [Security](#security-and-control) ·
+[Release notes](#release-notes)
+
+## Self-hosting
+
+### As a hosted HTTP server
+
+```bash
+hypermail-mcp --http --port 3000 --host 0.0.0.0
+# endpoint: http://<host>:3000/mcp  (Streamable HTTP transport, session-aware)
+```
+
+HTTP has **no built-in authentication**. Keep it on a local/private network or
+behind an authenticated, authorized reverse proxy; do not expose the backend
+port directly to the public internet. Set a persistent `HYPERMAIL_KEY` and data
+directory for restarts and redeploys. See the
+[hosting guide](https://github.com/hypersimple-ch/hypermail-mcp/blob/main/docs/hosting.md).
+
+### Docker
+
+```bash
+# Build
+docker build -t hypermail-mcp .
+
+# Run
+# Pass secret values from your shell or deployment environment; do not commit them.
+docker run -d \
+  --name hypermail-mcp \
+  -p 127.0.0.1:3000:3000 \
+  -e HYPERMAIL_KEY \
+  -e HYPERMAIL_OUTLOOK_CLIENT_ID \
+  -e HYPERMAIL_OUTLOOK_TENANT_ID \
+  -v hypermail-data:/var/lib/mcp \
+  hypermail-mcp
+```
+
+The image runs the server in HTTP mode on port 3000 with a 30-second
+HEALTHCHECK against `/mcp`. Data is persisted via a Docker volume at
+`/var/lib/mcp`.
+
+### Development
+
+To test the HTTP server locally:
+
+```bash
+# Terminal 1: auto-rebuild TypeScript on save
+pnpm dev
+
+# Terminal 2: start HTTP server with env/CLI config
+pnpm dev:http
+```
+
+The server listens on `http://127.0.0.1:3000/mcp`.
+
+## Runtime and provider configuration
+
+Hypermail uses flat `HYPERMAIL_*` environment variables as the source of truth.
+There is no runtime config file. CLI flags only override transport, host, port,
+and data directory for a single invocation.
+
+CLI flags: `--http`, `--port`, `--host`, `--data-dir`, `--version`, `--help`.
+
+Subcommands: `hypermail-mcp generate-key` — generate a base64 32-byte key for
+`HYPERMAIL_KEY`.
+
+### Local CLI / env example
+
+```bash
+export HYPERMAIL_KEY="$(hypermail-mcp generate-key)"
+export HYPERMAIL_DATA_DIR="$HOME/.local/share/hypermail-mcp"
+export HYPERMAIL_OUTLOOK_CLIENT_ID="<your-client-id>"
+hypermail-mcp
+```
+
+### Generic MCP client JSON example
+
+```jsonc
+{
+  "mcpServers": {
+    "hypermail": {
+      "command": "npx",
+      "args": ["-y", "hypermail-mcp"],
+      "env": {
+        "HYPERMAIL_KEY": "${HYPERMAIL_KEY}",
+        "HYPERMAIL_DATA_DIR": "${HYPERMAIL_DATA_DIR}",
+        "HYPERMAIL_OUTLOOK_CLIENT_ID": "${HYPERMAIL_OUTLOOK_CLIENT_ID}"
+      }
+    }
+  }
+}
+```
+
+### Environment Variables
+
+| Env var | Purpose | Default / behavior |
+| --- | --- | --- |
+| `HYPERMAIL_DATA_DIR` | Account/token store location | `${XDG_DATA_HOME:-~/.local/share}/hypermail-mcp` |
+| `HYPERMAIL_KEY` | 32-byte AES-256-GCM key as hex/base64, or any passphrase derived via SHA-256 | If unset, generates and persists a local key and prints a startup warning |
+| `HYPERMAIL_TRANSPORT` | Runtime transport: `stdio` or `http` | `stdio`; `--http` overrides to `http` |
+| `HYPERMAIL_HTTP_PORT` | HTTP bind port | `3000`; invalid HTTP-mode values warn and fall back |
+| `HYPERMAIL_HTTP_HOST` | HTTP bind host | `127.0.0.1`; invalid HTTP-mode values warn and fall back |
+| `HYPERMAIL_OUTLOOK_CLIENT_ID` | Optional custom Azure/Entra public client ID | Built-in public client |
+| `HYPERMAIL_OUTLOOK_TENANT_ID` | Optional Outlook tenant/authority selector | `common` |
+| `HYPERMAIL_GMAIL_CLIENT_ID` | Google OAuth client ID | Required when adding a Gmail account |
+| `HYPERMAIL_GMAIL_CLIENT_SECRET` | Google OAuth client secret, when issued by the client type | unset |
+| `HYPERMAIL_GMAIL_REDIRECT_URI` | Hosted Gmail OAuth callback URI | Local loopback callback when unset |
+| `HYPERMAIL_TOOLS_ENABLED` | Comma-separated tool allowlist | Empty/unset means no filtering |
+| `HYPERMAIL_TOOLS_DISABLED` | Comma-separated tool blocklist | Empty/unset means no filtering |
+| `HYPERMAIL_DEBUG` | Enable structured debug logs to stderr (`1`, `true`, `yes`, `on`, or `debug`) | Disabled by default |
+
+**Priority order:** selected CLI flags > `HYPERMAIL_*` env vars > hardcoded defaults.
+
+Per-tool filtering (`HYPERMAIL_TOOLS_ENABLED` / `HYPERMAIL_TOOLS_DISABLED`) lets
+operators ship minimal agent-facing surfaces. If both non-empty lists are set,
+or either list contains an unknown tool name, startup fails.
+
+## Tools
+
+Most email tools take an `account` argument — the email address of the inbox to
+operate on. The server resolves the right provider from the encrypted account
+store. Omit `account` on `search_emails` or `get_new_emails` to work across all
+connected accounts.
+
+Tools that return or modify an identifiable email include a user-shareable
+`webUrl` for opening that message in the provider's native web client. The URL
+contains no credentials; the person opening it must already have mailbox
+access. When a URL cannot be supplied, the same email/result instead includes
+`webUrlUnavailableReason` (including on every item in collection responses).
+Outlook uses Microsoft Graph's native link and refreshes moved items before
+returning their post-operation ID/link. Gmail links are account-aware but use a
+best-effort, unofficial web route. Generic IMAP has no universal webmail URL, so
+it returns an unsupported reason and never fabricates an `imap://` URL.
+
+| Tool | Inputs | Notes |
+| --- | --- | --- |
+| `list_accounts` | — | Returns registered emails + provider, no secrets. |
+| `add_account` | `provider`, `email?`, `config?` | Starts the provider add flow. Outlook returns a device code; Gmail returns an OAuth URL. Ready account responses include public metadata only and never return stored tokens/passwords. Returns `{handle, verification:{type, userCode, verificationUri, expiresAt, message}}` for pending flows. |
+| `complete_add_account` | `provider`, `handle`, `authorizationResponse?`, `code?`, `state?` | Returns `pending` / `ready` / `expired` / `error`. Ready account responses include public metadata only and never return stored tokens/passwords. Gmail accepts a pasted final redirected URL or raw code/state for remote-safe completion. |
+| `get_account_settings` | `account` | Get signature (HTML) and style preferences for an account. |
+| `set_account_settings` | `account`, `signature?`, `signaturePath?`, `style?` | Set signature HTML (inline or via file path) and font preferences. |
+| `remove_account` | `email` | Deletes tokens for the account. |
+| `list_emails` | `account`, `folder?`, `limit?`, `unreadOnly?`, `skip?` | Defaults: folder=`inbox`, limit=25. Supports pagination via `skip` — response includes `hasMore`. Outlook accepts well-known folder names, folder IDs, and falls back from localized display names to matching folder IDs. |
+| `get_new_emails` | `account?`, `limit?` | Pull new inbox emails not previously returned by this tool. `limit` defaults to 10 and is global when `account` is omitted. Returns full markdown bodies with attachment metadata; bodies may be truncated. |
+| `search_emails` | `account?`, `query?`, `from?`, `to?`, `cc?`, `limit?` | Provide at least one of `query`, `from`, `to`, or `cc`; distinct criteria combine with AND. `cc` searches CC or BCC. Search one account when `account` is provided, or omit it to search all registered accounts in parallel. Returns account-annotated summaries and partial per-account errors. Address filters are provider-agnostic; Outlook search results with malformed IDs are normalized to readable immutable IDs when possible. |
+| `read_email` | `account`, `id`, `format?` | Returns full body + recipients + attachment metadata. `format`: `markdown` (default) or explicit `html`; `text` is rejected before provider reads. Messages without HTML retain their literal text body. Outlook retries malformed/stale IDs through Graph ID translation before failing. |
+| `read_attachment` | `account`, `messageId`, `attachmentId` | Download an attachment to a temporary file and return its path plus the parent message's web link or unavailable reason. |
+| `archive_email` | `account`, `id` | Move a message to the Archive folder and return its post-operation ID/link. |
+| `trash_email` | `account`, `id` | Move a message to Deleted Items (trash) and return its post-operation ID/link. |
+| `move_email` | `account`, `id`, `destination` | Move to any folder by well-known name (`inbox`, `drafts`, etc.) or custom folder ID, returning the post-operation ID/link. |
+| `send_email` | `account`, `to[]`, `cc?`, `bcc?`, `subject`, `body`, `include_signature`, `inReplyTo`, `replyAll?`, `forwardMessageId?`, `attachments?` | Send an email. `body` is Markdown only, converted to HTML via `marked`; raw HTML is rejected. Use a blank line between paragraphs. Account styles apply independently of `include_signature`; the saved HTML signature is appended when true. `inReplyTo` sends as threaded reply; `forwardMessageId` sends as forward. `inReplyTo` is required — set to `false` for new emails. `attachments` is an optional array of `{filePath, name?}` — files are read from disk and encoded automatically. |
+| `draft_email` | `account`, `to[]`, `cc?`, `bcc?`, `subject`, `body`, `include_signature`, `inReplyTo`, `replyAll?`, `forwardMessageId?`, `attachments?` | Save as draft without sending, with the same Markdown-only params as `send_email`. Returns final draft ID/link and authoritative `draftMarkdown` after readback. Readback failure returns `warning` and `draftReadbackError`. Explicit HTML is available via `read_email(format: "html")`. Replies retain quoted history and threading. Set required `inReplyTo` to `false` for new emails. |
+| `edit_draft` | `account`, `id`, `to?`, `cc?`, `bcc?`, `subject?`, `old_text?`, `new_text?`, `body?`, `include_signature?`, `new_attachments?`, `remove_attachments?` | Copy exact, unique `old_text` from complete current `draftMarkdown` or `read_email` Markdown, not HTML or truncated previews. Words, phrases and complete blocks are supported; unsafe structural selections are rejected before any mutation. Provide Markdown-only `new_text`; inline selections cannot accept multiple blocks or signatures. Unselected HTML remains byte-for-byte intact. Empty replacement deletes the selection. `body` remains an alias for `new_text` with `old_text`, never full replacement alone. Complete-body persistence is checked after saving. Returns final draft ID/link, `draftMarkdown` and attachment metadata. `new_attachments` adds `{filePath, name?}[]`; `remove_attachments` removes `string[]` IDs. |
+| `send_draft` | `account`, `id` | Send an existing draft email by ID. Use with draft IDs returned by `draft_email` or `edit_draft`. |
+| `list_folders` | `account`, `parentFolderId?` | List available mail folders. Returns top-level folders by default, or children of `parentFolderId`. |
+| `create_folder` | `account`, `displayName`, `parentFolderId?` | Create a new mail folder under root (default) or the given parent. |
+| `delete_folder` | `account`, `folderId` | Delete a mail folder by ID. |
+| `rename_folder` | `account`, `folderId`, `newName` | Rename an existing mail folder. |
+| `mark_read` | `account`, `id` | Mark a message as read. |
+| `mark_unread` | `account`, `id` | Mark a message as unread. |
+
+## Pull new emails
+
+`get_new_emails` is the replacement for server-side watch/push delivery. The
+server does not run background cron jobs; agents or their harnesses call this
+tool on their own schedule, for example every 30–60 seconds.
+
+**Behavior:**
+- Polls **inbox only**.
+- `account` is optional. When omitted, the tool checks all registered accounts.
+- `limit` defaults to `10`. In all-account mode, the limit is a global total
+  across accounts, selected by oldest `receivedAt` first.
+- All-account polling performs per-account candidate collection and hydration in
+  parallel, then returns the combined batch in oldest-first order.
+- First use for an account initializes its checkpoint to the newest inbox email
+  and returns no emails for that account.
+- Later calls return emails not previously returned by this tool, oldest first.
+- Returned bodies are markdown and may be truncated around 20k characters; call
+  `read_email` for the full body when needed.
+- Attachments are returned as metadata only; call `read_attachment` for content.
+- The tool does not mark emails as read.
+- `limit: 0` can initialize/check state without fetching message bodies.
+
+All-account calls return partial failures as `errors: [{ account, message }]`
+and still return successful accounts' emails. Pollers should continue processing
+returned emails when `errors` is non-empty, and use those entries to notify or
+log which accounts are failing.
+
+See the [Hermes scheduler example](https://github.com/hypersimple-ch/hypermail-mcp/tree/main/examples/hermes)
+for an integration that polls this tool and hands new-email payloads to an agent.
+
+## Add-account flows
+
+### Outlook
+
+1. Agent calls `add_account({ provider: "outlook" })`.
+2. Server returns:
+   ```json
+   {
+     "status": "pending",
+     "handle": "…uuid…",
+     "verification": {
+       "type": "device_code",
+       "userCode": "ABCD-EFGH",
+       "verificationUri": "https://microsoft.com/devicelogin",
+       "expiresAt": "2025-…",
+       "message": "To sign in, use a web browser to open …"
+     }
+   }
+   ```
+3. The user opens the URL and enters the code.
+4. Agent polls `complete_add_account({ provider: "outlook", handle })` until
+   it returns `{ "status": "ready", "account": {...} }`.
+5. From then on, any tool can be called with `account: "<that-email>"`.
+
+### IMAP
+
+IMAP accounts are added synchronously with host/user/password settings. If the
+server accepts TCP/TLS but closes during login, Hypermail reports an IMAP
+authentication failure. Check the mailbox password or app-password, confirm IMAP
+access is enabled by the provider, then re-add or update the account.
+
+### Gmail
+
+For Google Cloud prerequisites, see the
+[website's Google OAuth checklist](https://hypermail.hypersimple.ch/gmail-setup.html).
+
+Gmail uses Google OAuth 2.0, matching the official Gmail MCP model. Google's
+device-code endpoint rejects Gmail API scopes, so Hypermail uses an authorization
+URL with a real callback. Service accounts are only suitable for Google
+Workspace domain-wide delegation; they don't grant server-to-server access to
+consumer `@gmail.com` inboxes.
+
+For local stdio/Desktop OAuth clients, Hypermail starts a temporary
+`127.0.0.1` loopback callback server automatically. For hosted HTTP deployments,
+set `HYPERMAIL_GMAIL_REDIRECT_URI` and register the exact URI in Google Auth
+Platform, for example:
+
+```bash
+HYPERMAIL_TRANSPORT=http
+HYPERMAIL_GMAIL_REDIRECT_URI=https://mail.example.com/oauth/gmail/callback
+```
+
+1. Configure `HYPERMAIL_GMAIL_CLIENT_ID` and, when issued by your Google client
+   type, `HYPERMAIL_GMAIL_CLIENT_SECRET`. Use a Desktop client for local
+   loopback, or a Web client for hosted HTTP callbacks.
+2. Agent calls `add_account({ provider: "gmail" })`.
+3. Server returns an OAuth URL:
+   ```json
+   {
+     "status": "pending",
+     "handle": "…uuid…",
+     "verification": {
+       "type": "oauth_url",
+       "userCode": "",
+       "verificationUri": "https://accounts.google.com/o/oauth2/v2/auth?...",
+       "expiresAt": "2025-…",
+       "message": "Open this URL in a browser to authorize Gmail access..."
+     }
+   }
+   ```
+4. The user opens `verificationUri` and grants access. If the configured
+   callback is reachable, the browser shows a small success page and the agent
+   can poll `complete_add_account({ provider: "gmail", handle })` until ready.
+5. If the browser cannot reach the callback, the manual fallback still works:
+   copy the final redirected URL from the browser address bar and call:
+   ```json
+   {
+     "provider": "gmail",
+     "handle": "…uuid…",
+     "authorizationResponse": "http://127.0.0.1:54321/oauth2callback?code=...&state=..."
+   }
+   ```
+6. `complete_add_account` validates state, exchanges the code for tokens, stores
+   the account, and returns `{ "status": "ready", "account": {...} }`.
+
+## Security and control
+
+- **Your deployment, your accounts.** Run locally over stdio or self-host over
+  Streamable HTTP. Email content is made available to the MCP client and AI
+  agent you connect; local hosting does not mean it stays out of your AI provider.
+- **Encrypted credentials at rest.** Account tokens and passwords are stored
+  with AES-256-GCM. Protect the encryption key and data directory; encryption
+  at rest is not caller authentication.
+- **Choose the available tools.** Use `HYPERMAIL_TOOLS_ENABLED` or
+  `HYPERMAIL_TOOLS_DISABLED` to limit the tool surface. These filters are
+  server-wide, not per-user authorization.
+- **Protect HTTP access.** HTTP has no built-in authentication. Use private
+  networking or an authenticated, authorized reverse proxy. See the
+  [hosting guide](https://github.com/hypersimple-ch/hypermail-mcp/blob/main/docs/hosting.md).
+- **Inspect the code.** Hypermail MCP is MIT-licensed open source. Review it,
+  contribute, or host it on infrastructure you control.
+
+## Project layout
+
+```
+src/
+  cli.ts                       # arg parsing + entry
+  server.ts                    # MCP server, stdio + HTTP transports, session management
+  version.ts                   # version constant
+  config.ts                    # env-only config types + resolution
+  store/
+    account-store.ts           # encrypted multi-account store (AES-256-GCM)
+    crypto.ts                  # AES-256-GCM encrypt/decrypt, key resolution, atomic writes
+  providers/
+    types.ts                   # EmailProvider interface + shared DTOs
+    registry.ts                # routes account email → provider
+    outlook/
+      auth.ts                  # msal-node device-code flow
+      client.ts                # @microsoft/microsoft-graph-client factory
+      index.ts                 # OutlookProvider implementation
+    imap/index.ts              # IMAP provider (imapflow + nodemailer)
+    gmail/
+      auth.ts                  # Google OAuth authorization-code flow
+      client.ts                # Gmail API (googleapis)
+      index.ts                 # GmailProvider implementation
+    shared/                    # shared utilities across providers
+  tools/
+    index.ts                   # MCP tool registrations
+    accounts.ts                # list/add/remove/complete-add account tools
+    browse.ts                  # list/search/read email tools
+    new-emails.ts              # get_new_emails pull/checkpoint tool
+    compose.ts                 # send/draft/edit/send-draft tools
+    folders.ts                 # list/create/delete/rename folder tools
+    organize.ts                # archive/trash/move/mark-read/mark-unread tools
+    shared.ts                  # shared tool helpers
+```
+
+## Release notes
+
+### v0.7.29 — Package documentation
+
+- Clarified the open-source, multi-provider email server positioning and its
+  distinction from the Hypermail app in development.
+- Put supported mailboxes, setup, and agent workflows before the technical
+  reference and release history.
+- Updated npm metadata and linked the project website and Google OAuth guide.
+
+### v0.7.28 — Correctness fixes
 
 - Gmail OAuth includes the account address as a login hint to help select the intended Google account.
 - Composition is Markdown-only: `send_email`, `draft_email`, and replacement content in `edit_draft` reject raw HTML before provider mutations. `draft_email` and `edit_draft` return authoritative `draftMarkdown`, replacing `draftHtml`. `read_email` supports only `markdown` (default) and explicit `html`; plain-text-only messages retain their literal body.
@@ -190,356 +637,8 @@ Known live gaps: Gmail attachment tokens change between reads of an unchanged dr
 > by wrapping all tool schemas in `z.object()` and replacing discriminated
 > union output schemas that caused `validateToolOutput` crashes.
 
-The agent doesn't care whether an address is a work Outlook account, a personal
-Microsoft account, a personal IMAP mailbox, or Gmail — it just calls
-`list_emails`, `search_emails`, `read_email`, `send_email` and passes the email
-address as the `account` argument. The server routes to the right backend.
-
-**v1 status:** Outlook / Microsoft 365 (personal + work) fully supported via
-Microsoft Graph. IMAP (any IMAP server) supported via `imapflow` + `nodemailer`.
-Gmail supported via Google OAuth authorization-code flow with local loopback or
-hosted callbacks plus remote-safe manual completion.
-
-## Why
-
-- Existing Outlook/M365 MCP servers (e.g. `@softeria/ms-365-mcp-server`) expose
-  ~200 raw Graph endpoints and are tied to a single signed-in user.
-- This project wraps the same proven stack (`@azure/msal-node` for auth,
-  `@microsoft/microsoft-graph-client` for HTTP) but exposes only a small,
-  provider-agnostic email API and supports **multiple accounts at once**, keyed
-  by email address.
-
-## Install / run
-
-```bash
-npm install -g hypermail-mcp     # or pnpm / npx
-hypermail-mcp --help
-```
-
-Run as a stdio MCP server (the default) — wire it into your MCP host:
-
-### Claude Desktop / Claude Code
-
-```jsonc
-{
-  "mcpServers": {
-    "hyper-email": {
-      "command": "npx",
-      "args": ["-y", "hypermail-mcp"]
-    }
-  }
-}
-```
-
-Or via the CLI:
-
-```bash
-claude mcp add hypermail -- npx -y hypermail-mcp
-```
-
-### As a hosted HTTP server
-
-```bash
-hypermail-mcp --http --port 3000 --host 0.0.0.0
-# endpoint: http://<host>:3000/mcp  (Streamable HTTP transport, session-aware)
-```
-
-When hosted, set `HYPERMAIL_KEY` so the account file is reproducibly
-decryptable across restarts and redeploys.
-
-### Docker
-
-```bash
-# Build
-docker build -t hypermail-mcp .
-
-# Run
-# Pass secret values from your shell or deployment environment; do not commit them.
-docker run -d \
-  --name hypermail-mcp \
-  -p 3000:3000 \
-  -e HYPERMAIL_KEY \
-  -e HYPERMAIL_OUTLOOK_CLIENT_ID \
-  -e HYPERMAIL_OUTLOOK_TENANT_ID \
-  -v hypermail-data:/var/lib/mcp \
-  hypermail-mcp
-```
-
-The image runs the server in HTTP mode on port 3000 with a 30-second
-HEALTHCHECK against `/mcp`. Data is persisted via a Docker volume at
-`/var/lib/mcp`.
-
-### Development
-
-To test the HTTP server locally:
-
-```bash
-# Terminal 1: auto-rebuild TypeScript on save
-pnpm dev
-
-# Terminal 2: start HTTP server with env/CLI config
-pnpm dev:http
-```
-
-The server listens on `http://127.0.0.1:3000/mcp`.
-
-## Runtime and provider configuration
-
-Hypermail uses flat `HYPERMAIL_*` environment variables as the source of truth.
-There is no runtime config file. CLI flags only override transport, host, port,
-and data directory for a single invocation.
-
-CLI flags: `--http`, `--port`, `--host`, `--data-dir`, `--version`, `--help`.
-
-Subcommands: `hypermail-mcp generate-key` — generate a base64 32-byte key for
-`HYPERMAIL_KEY`.
-
-### Local CLI / env example
-
-```bash
-export HYPERMAIL_KEY="$(hypermail-mcp generate-key)"
-export HYPERMAIL_DATA_DIR="$HOME/.local/share/hypermail-mcp"
-export HYPERMAIL_OUTLOOK_CLIENT_ID="<your-client-id>"
-hypermail-mcp
-```
-
-### Generic MCP client JSON example
-
-```jsonc
-{
-  "mcpServers": {
-    "hypermail": {
-      "command": "npx",
-      "args": ["-y", "hypermail-mcp"],
-      "env": {
-        "HYPERMAIL_KEY": "${HYPERMAIL_KEY}",
-        "HYPERMAIL_DATA_DIR": "${HYPERMAIL_DATA_DIR}",
-        "HYPERMAIL_OUTLOOK_CLIENT_ID": "${HYPERMAIL_OUTLOOK_CLIENT_ID}"
-      }
-    }
-  }
-}
-```
-
-### Environment Variables
-
-| Env var | Purpose | Default / behavior |
-| --- | --- | --- |
-| `HYPERMAIL_DATA_DIR` | Account/token store location | `${XDG_DATA_HOME:-~/.local/share}/hypermail-mcp` |
-| `HYPERMAIL_KEY` | 32-byte AES-256-GCM key as hex/base64, or any passphrase derived via SHA-256 | If unset, generates and persists a local key and prints a startup warning |
-| `HYPERMAIL_TRANSPORT` | Runtime transport: `stdio` or `http` | `stdio`; `--http` overrides to `http` |
-| `HYPERMAIL_HTTP_PORT` | HTTP bind port | `3000`; invalid HTTP-mode values warn and fall back |
-| `HYPERMAIL_HTTP_HOST` | HTTP bind host | `127.0.0.1`; invalid HTTP-mode values warn and fall back |
-| `HYPERMAIL_OUTLOOK_CLIENT_ID` | Optional custom Azure/Entra public client ID | Built-in public client |
-| `HYPERMAIL_OUTLOOK_TENANT_ID` | Optional Outlook tenant/authority selector | `common` |
-| `HYPERMAIL_GMAIL_CLIENT_ID` | Google OAuth client ID | Required when adding a Gmail account |
-| `HYPERMAIL_GMAIL_CLIENT_SECRET` | Google OAuth client secret, when issued by the client type | unset |
-| `HYPERMAIL_GMAIL_REDIRECT_URI` | Hosted Gmail OAuth callback URI | Local loopback callback when unset |
-| `HYPERMAIL_TOOLS_ENABLED` | Comma-separated tool allowlist | Empty/unset means no filtering |
-| `HYPERMAIL_TOOLS_DISABLED` | Comma-separated tool blocklist | Empty/unset means no filtering |
-| `HYPERMAIL_DEBUG` | Enable structured debug logs to stderr (`1`, `true`, `yes`, `on`, or `debug`) | Disabled by default |
-
-**Priority order:** selected CLI flags > `HYPERMAIL_*` env vars > hardcoded defaults.
-
-Per-tool filtering (`HYPERMAIL_TOOLS_ENABLED` / `HYPERMAIL_TOOLS_DISABLED`) lets
-operators ship minimal agent-facing surfaces. If both non-empty lists are set,
-or either list contains an unknown tool name, startup fails.
-
-## Tools
-
-All "email" tools take an `account` argument — the email address of the inbox
-to operate on. The server resolves the right provider from the encrypted
-account store.
-
-Tools that return or modify an identifiable email include a user-shareable
-`webUrl` for opening that message in the provider's native web client. The URL
-contains no credentials; the person opening it must already have mailbox
-access. When a URL cannot be supplied, the same email/result instead includes
-`webUrlUnavailableReason` (including on every item in collection responses).
-Outlook uses Microsoft Graph's native link and refreshes moved items before
-returning their post-operation ID/link. Gmail links are account-aware but use a
-best-effort, unofficial web route. Generic IMAP has no universal webmail URL, so
-it returns an unsupported reason and never fabricates an `imap://` URL.
-
-| Tool | Inputs | Notes |
-| --- | --- | --- |
-| `list_accounts` | — | Returns registered emails + provider, no secrets. |
-| `add_account` | `provider`, `email?`, `config?` | Starts the provider add flow. Outlook returns a device code; Gmail returns an OAuth URL. Ready account responses include public metadata only and never return stored tokens/passwords. Returns `{handle, verification:{type, userCode, verificationUri, expiresAt, message}}` for pending flows. |
-| `complete_add_account` | `provider`, `handle`, `authorizationResponse?`, `code?`, `state?` | Returns `pending` / `ready` / `expired` / `error`. Ready account responses include public metadata only and never return stored tokens/passwords. Gmail accepts a pasted final redirected URL or raw code/state for remote-safe completion. |
-| `get_account_settings` | `account` | Get signature (HTML) and style preferences for an account. |
-| `set_account_settings` | `account`, `signature?`, `signaturePath?`, `style?` | Set signature HTML (inline or via file path) and font preferences. |
-| `remove_account` | `email` | Deletes tokens for the account. |
-| `list_emails` | `account`, `folder?`, `limit?`, `unreadOnly?`, `skip?` | Defaults: folder=`inbox`, limit=25. Supports pagination via `skip` — response includes `hasMore`. Outlook accepts well-known folder names, folder IDs, and falls back from localized display names to matching folder IDs. |
-| `get_new_emails` | `account?`, `limit?` | Pull new inbox emails not previously returned by this tool. `limit` defaults to 10 and is global when `account` is omitted. Returns full markdown bodies with attachment metadata; bodies may be truncated. |
-| `search_emails` | `account?`, `query?`, `from?`, `to?`, `cc?`, `limit?` | Provide at least one of `query`, `from`, `to`, or `cc`; distinct criteria combine with AND. `cc` searches CC or BCC. Search one account when `account` is provided, or omit it to search all registered accounts in parallel. Returns account-annotated summaries and partial per-account errors. Address filters are provider-agnostic; Outlook search results with malformed IDs are normalized to readable immutable IDs when possible. |
-| `read_email` | `account`, `id`, `format?` | Returns full body + recipients + attachment metadata. `format`: `markdown` (default) or explicit `html`; `text` is rejected before provider reads. Messages without HTML retain their literal text body. Outlook retries malformed/stale IDs through Graph ID translation before failing. |
-| `read_attachment` | `account`, `messageId`, `attachmentId` | Download an attachment to a temporary file and return its path plus the parent message's web link or unavailable reason. |
-| `archive_email` | `account`, `id` | Move a message to the Archive folder and return its post-operation ID/link. |
-| `trash_email` | `account`, `id` | Move a message to Deleted Items (trash) and return its post-operation ID/link. |
-| `move_email` | `account`, `id`, `destination` | Move to any folder by well-known name (`inbox`, `drafts`, etc.) or custom folder ID, returning the post-operation ID/link. |
-| `send_email` | `account`, `to[]`, `cc?`, `bcc?`, `subject`, `body`, `include_signature`, `inReplyTo`, `replyAll?`, `forwardMessageId?`, `attachments?` | Send an email. `body` is Markdown only, converted to HTML via `marked`; raw HTML is rejected. Use a blank line between paragraphs. Account styles apply independently of `include_signature`; the saved HTML signature is appended when true. `inReplyTo` sends as threaded reply; `forwardMessageId` sends as forward. `inReplyTo` is required — set to `false` for new emails. `attachments` is an optional array of `{filePath, name?}` — files are read from disk and encoded automatically. |
-| `draft_email` | `account`, `to[]`, `cc?`, `bcc?`, `subject`, `body`, `include_signature`, `inReplyTo`, `replyAll?`, `forwardMessageId?`, `attachments?` | Save as draft without sending, with the same Markdown-only params as `send_email`. Returns final draft ID/link and authoritative `draftMarkdown` after readback. Readback failure returns `warning` and `draftReadbackError`. Explicit HTML is available via `read_email(format: "html")`. Replies retain quoted history and threading. Set required `inReplyTo` to `false` for new emails. |
-| `edit_draft` | `account`, `id`, `to?`, `cc?`, `bcc?`, `subject?`, `old_text?`, `new_text?`, `body?`, `include_signature?`, `new_attachments?`, `remove_attachments?` | Copy exact, unique `old_text` from complete current `draftMarkdown` or `read_email` Markdown, not HTML or truncated previews. Words, phrases and complete blocks are supported; unsafe structural selections are rejected before any mutation. Provide Markdown-only `new_text`; inline selections cannot accept multiple blocks or signatures. Unselected HTML remains byte-for-byte intact. Empty replacement deletes the selection. `body` remains an alias for `new_text` with `old_text`, never full replacement alone. Complete-body persistence is checked after saving. Returns final draft ID/link, `draftMarkdown` and attachment metadata. `new_attachments` adds `{filePath, name?}[]`; `remove_attachments` removes `string[]` IDs. |
-| `send_draft` | `account`, `id` | Send an existing draft email by ID. Use with draft IDs returned by `draft_email` or `edit_draft`. |
-| `list_folders` | `account`, `parentFolderId?` | List available mail folders. Returns top-level folders by default, or children of `parentFolderId`. |
-| `create_folder` | `account`, `displayName`, `parentFolderId?` | Create a new mail folder under root (default) or the given parent. |
-| `delete_folder` | `account`, `folderId` | Delete a mail folder by ID. |
-| `rename_folder` | `account`, `folderId`, `newName` | Rename an existing mail folder. |
-| `mark_read` | `account`, `id` | Mark a message as read. |
-| `mark_unread` | `account`, `id` | Mark a message as unread. |
-
-## Pull new emails
-
-`get_new_emails` is the replacement for server-side watch/push delivery. The
-server does not run background cron jobs; agents or their harnesses call this
-tool on their own schedule, for example every 30–60 seconds.
-
-**Behavior:**
-- Polls **inbox only**.
-- `account` is optional. When omitted, the tool checks all registered accounts.
-- `limit` defaults to `10`. In all-account mode, the limit is a global total
-  across accounts, selected by oldest `receivedAt` first.
-- All-account polling performs per-account candidate collection and hydration in
-  parallel, then returns the combined batch in oldest-first order.
-- First use for an account initializes its checkpoint to the newest inbox email
-  and returns no emails for that account.
-- Later calls return emails not previously returned by this tool, oldest first.
-- Returned bodies are markdown and may be truncated around 20k characters; call
-  `read_email` for the full body when needed.
-- Attachments are returned as metadata only; call `read_attachment` for content.
-- The tool does not mark emails as read.
-- `limit: 0` can initialize/check state without fetching message bodies.
-
-All-account calls return partial failures as `errors: [{ account, message }]`
-and still return successful accounts' emails. Pollers should continue processing
-returned emails when `errors` is non-empty, and use those entries to notify or
-log which accounts are failing.
-
-See [`examples/hermes/`](examples/hermes/) for a Hermes scheduler integration
-that polls this tool and hands new-email payloads to a Hermes agent.
-
-## Add-account flows
-
-### Outlook
-
-1. Agent calls `add_account({ provider: "outlook" })`.
-2. Server returns:
-   ```json
-   {
-     "status": "pending",
-     "handle": "…uuid…",
-     "verification": {
-       "type": "device_code",
-       "userCode": "ABCD-EFGH",
-       "verificationUri": "https://microsoft.com/devicelogin",
-       "expiresAt": "2025-…",
-       "message": "To sign in, use a web browser to open …"
-     }
-   }
-   ```
-3. The user opens the URL and enters the code.
-4. Agent polls `complete_add_account({ provider: "outlook", handle })` until
-   it returns `{ "status": "ready", "account": {...} }`.
-5. From then on, any tool can be called with `account: "<that-email>"`.
-
-### IMAP
-
-IMAP accounts are added synchronously with host/user/password settings. If the
-server accepts TCP/TLS but closes during login, Hypermail reports an IMAP
-authentication failure. Check the mailbox password or app-password, confirm IMAP
-access is enabled by the provider, then re-add or update the account.
-
-### Gmail
-
-Gmail uses Google OAuth 2.0, matching the official Gmail MCP model. Google's
-device-code endpoint rejects Gmail API scopes, so Hypermail uses an authorization
-URL with a real callback. Service accounts are only suitable for Google
-Workspace domain-wide delegation; they don't grant server-to-server access to
-consumer `@gmail.com` inboxes.
-
-For local stdio/Desktop OAuth clients, Hypermail starts a temporary
-`127.0.0.1` loopback callback server automatically. For hosted HTTP deployments,
-set `HYPERMAIL_GMAIL_REDIRECT_URI` and register the exact URI in Google Auth
-Platform, for example:
-
-```bash
-HYPERMAIL_TRANSPORT=http
-HYPERMAIL_GMAIL_REDIRECT_URI=https://mail.example.com/oauth/gmail/callback
-```
-
-1. Configure `HYPERMAIL_GMAIL_CLIENT_ID` and, when issued by your Google client
-   type, `HYPERMAIL_GMAIL_CLIENT_SECRET`. Use a Desktop client for local
-   loopback, or a Web client for hosted HTTP callbacks.
-2. Agent calls `add_account({ provider: "gmail" })`.
-3. Server returns an OAuth URL:
-   ```json
-   {
-     "status": "pending",
-     "handle": "…uuid…",
-     "verification": {
-       "type": "oauth_url",
-       "userCode": "",
-       "verificationUri": "https://accounts.google.com/o/oauth2/v2/auth?...",
-       "expiresAt": "2025-…",
-       "message": "Open this URL in a browser to authorize Gmail access..."
-     }
-   }
-   ```
-4. The user opens `verificationUri` and grants access. If the configured
-   callback is reachable, the browser shows a small success page and the agent
-   can poll `complete_add_account({ provider: "gmail", handle })` until ready.
-5. If the browser cannot reach the callback, the manual fallback still works:
-   copy the final redirected URL from the browser address bar and call:
-   ```json
-   {
-     "provider": "gmail",
-     "handle": "…uuid…",
-     "authorizationResponse": "http://127.0.0.1:54321/oauth2callback?code=...&state=..."
-   }
-   ```
-6. `complete_add_account` validates state, exchanges the code for tokens, stores
-   the account, and returns `{ "status": "ready", "account": {...} }`.
-
-## Roadmap
-
-- Threading / conversations.
-- Calendar integration.
-
-## Project layout
-
-```
-src/
-  cli.ts                       # arg parsing + entry
-  server.ts                    # MCP server, stdio + HTTP transports, session management
-  version.ts                   # version constant
-  config.ts                    # env-only config types + resolution
-  store/
-    account-store.ts           # encrypted multi-account store (AES-256-GCM)
-    crypto.ts                  # AES-256-GCM encrypt/decrypt, key resolution, atomic writes
-  providers/
-    types.ts                   # EmailProvider interface + shared DTOs
-    registry.ts                # routes account email → provider
-    outlook/
-      auth.ts                  # msal-node device-code flow
-      client.ts                # @microsoft/microsoft-graph-client factory
-      index.ts                 # OutlookProvider implementation
-    imap/index.ts              # IMAP provider (imapflow + nodemailer)
-    gmail/
-      auth.ts                  # Google OAuth authorization-code flow
-      client.ts                # Gmail API (googleapis)
-      index.ts                 # GmailProvider implementation
-    shared/                    # shared utilities across providers
-  tools/
-    index.ts                   # MCP tool registrations
-    accounts.ts                # list/add/remove/complete-add account tools
-    browse.ts                  # list/search/read email tools
-    new-emails.ts              # get_new_emails pull/checkpoint tool
-    compose.ts                 # send/draft/edit/send-draft tools
-    folders.ts                 # list/create/delete/rename folder tools
-    organize.ts                # archive/trash/move/mark-read/mark-unread tools
-    shared.ts                  # shared tool helpers
-```
-
 ## License
 
-MIT
+[MIT](https://github.com/hypersimple-ch/hypermail-mcp/blob/main/LICENSE).
+
+Built by [Hypersimple](https://hypermail.hypersimple.ch).

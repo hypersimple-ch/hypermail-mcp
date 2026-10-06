@@ -1,7 +1,7 @@
 {
   "name": "hypermail-mcp",
-  "version": "0.7.28",
-  "description": "Unified email MCP server — operate any inbox (Outlook now, IMAP/Gmail later) by passing an email address.",
+  "version": "0.7.29",
+  "description": "Open-source MCP server for AI agents to manage Gmail, Outlook, Microsoft 365, and IMAP mailboxes through one unified interface.",
   "type": "module",
   "bin": {
     "hypermail-mcp": "dist/cli.js"
@@ -31,11 +31,17 @@
     "mcp",
     "model-context-protocol",
     "email",
+    "ai-agents",
+    "gmail",
+    "google-workspace",
     "outlook",
+    "microsoft-365",
     "microsoft-graph",
-    "imap"
+    "imap",
+    "smtp"
   ],
   "license": "MIT",
+  "homepage": "https://hypermail.hypersimple.ch",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hypersimple-ch/hypermail-mcp.git"

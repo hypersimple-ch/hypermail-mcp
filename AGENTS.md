@@ -1,6 +1,6 @@
 # hypermail-mcp
 
-Unified email MCP server — operate any inbox (Outlook now, IMAP/Gmail later) by passing an email address.
+Open-source email MCP server — agents manage Gmail, Outlook, Microsoft 365, and IMAP mailboxes through one unified interface, keyed by email address.
 
 ## Purpose
 
