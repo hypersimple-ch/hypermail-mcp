@@ -266,7 +266,6 @@ If token exchange reports an invalid client secret, verify that
 in the server's effective environment, then restart and generate a fresh
 authorization link. Changing the client ID does not update its secret.
 Never print the secret in logs or paste it into chat.
-
 Restart the MCP server after changing its environment and call `add_account`
 again to generate a fresh link. Existing accounts retain the OAuth credentials
 stored when they were authorized. Validate a new connection by checking the
@@ -278,7 +277,6 @@ Stored accounts are not migrated to the built-in pair. Accounts with stale or
 missing OAuth credentials must reauthorize with `add_account` and
 `complete_add_account`; changing environment settings does not repair their
 stored credential pair.
-
 
 Per-tool filtering (`HYPERMAIL_TOOLS_ENABLED` / `HYPERMAIL_TOOLS_DISABLED`) lets
 operators ship minimal agent-facing surfaces. If both non-empty lists are set,
@@ -504,6 +502,13 @@ src/
 ```
 
 ## Release notes
+
+### v0.7.30 — Gmail authentication and archiving fixes
+
+- Gmail OAuth defaults to the built-in Hypermail MCP client when no custom
+  client ID is configured. Hosted deployments still require a Web application
+  client with their registered callback URL.
+- Gmail accounts connected over IMAP use native Gmail archiving.
 
 ### v0.7.29 — Package documentation
 
