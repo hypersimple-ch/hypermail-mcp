@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
 
 import {
@@ -7,17 +8,88 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("Gmail authorization-code OAuth", () => {
-  it.each([undefined, "", " \t "])("uses the Hypermail app for a blank client ID (%j)", async (clientId) => {
+  const defaultClientId =
+    "402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com";
+  // Fingerprint only: assertion failures must not reveal the distributed credential.
+  const defaultSecretIdentity =
+    "02ca9f2c5a2fdc5797a2948756101bca494e63ae7934a90cb9ed060d34e3530f";
+  const identity = (secret: string | null | undefined) =>
+    createHash("sha256").update(secret ?? "").digest("hex");
+
+  const blankInputs = [undefined, "", " \t "];
+  const cases = [
+    ...blankInputs.flatMap((clientId) =>
+      blankInputs.map((clientSecret) => ({
+        clientId, clientSecret, expectedId: defaultClientId,
+        expectedSecretIdentity: defaultSecretIdentity, succeeds: true,
+      })),
+    ),
+    {
+      clientId: defaultClientId, clientSecret: undefined, expectedId: defaultClientId,
+      expectedSecretIdentity: defaultSecretIdentity, succeeds: true,
+    },
+    {
+      clientId: " custom-id ", clientSecret: " custom-secret ", expectedId: "custom-id",
+      expectedSecretIdentity: identity("custom-secret"), succeeds: true,
+    },
+    ...blankInputs.map((clientSecret) => ({
+      clientId: "custom-id", clientSecret, expectedId: "custom-id",
+      expectedSecretIdentity: identity(undefined), succeeds: false,
+    })),
+    {
+      clientId: defaultClientId, clientSecret: " override ", expectedId: defaultClientId,
+      expectedSecretIdentity: identity("override"), succeeds: false,
+    },
+    {
+      clientId: undefined, clientSecret: " override ", expectedId: defaultClientId,
+      expectedSecretIdentity: identity("override"), succeeds: false,
+    },
+  ];
+
+  it.each(cases)("selects and exchanges credential case %#", async ({
+    clientId, clientSecret, expectedId, expectedSecretIdentity, succeeds,
+  }) => {
     const flow = await beginAuthorizationCode({
-      clientId,
-      redirectUri: "http://127.0.0.1:33333/callback",
+      clientId, clientSecret, redirectUri: "http://127.0.0.1:33333/callback",
     });
-    expect(new URL(flow.verificationUri).searchParams.get("client_id")).toBe(
-      "402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com",
-    );
+    expect(new URL(flow.verificationUri).searchParams.get("client_id")).toBe(expectedId);
+    expect(identity(flow.clientSecret)).toBe(expectedSecretIdentity);
+    expect(flow.clientSecret ? flow.verificationUri.includes(flow.clientSecret) : false).toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === "https://oauth2.googleapis.com/token") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("client_id")).toBe(expectedId);
+        expect(identity(body.get("client_secret"))).toBe(expectedSecretIdentity);
+        const requiredIdentity = expectedId === defaultClientId
+          ? defaultSecretIdentity : identity("custom-secret");
+        if (identity(body.get("client_secret")) !== requiredIdentity) {
+          return new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 });
+        }
+        return new Response(JSON.stringify({
+          access_token: "access-token", refresh_token: "refresh-token", expires_in: 3600,
+        }));
+      }
+      if (String(url) === "https://gmail.googleapis.com/gmail/v1/users/me/profile") {
+        return new Response(JSON.stringify({ emailAddress: "user@gmail.com" }));
+      }
+      throw new Error("Unexpected OAuth request");
+    }));
+    const completion = completeAuthorizationCode(flow, {
+      authorizationResponse: `${flow.redirectUri}?code=auth-code&state=${flow.state}`,
+    });
+    if (!succeeds) {
+      await expect(completion).rejects.toThrow("invalid_client");
+      return;
+    }
+    const result = await completion;
+    expect(result.tokens.clientId).toBe(expectedId);
+    expect(identity(result.tokens.clientSecret)).toBe(expectedSecretIdentity);
+    expect(result.tokens.refreshToken).toBe("refresh-token");
+    expect(result.email).toBe("user@gmail.com");
   });
 
   it("builds a Gmail OAuth URL with PKCE, state, and a configured redirect URI", async () => {
@@ -42,7 +114,6 @@ describe("Gmail authorization-code OAuth", () => {
     expect(url.searchParams.get("redirect_uri")).toBe("https://mail.example.com/oauth/gmail/callback");
     expect(flow.redirectUri).toBe("https://mail.example.com/oauth/gmail/callback");
     expect(flow.userCode).toBe("");
-    expect(flow.message).toContain("complete automatically");
     expect(flow.consumeAuthorizationResponse()).toBeUndefined();
   });
 

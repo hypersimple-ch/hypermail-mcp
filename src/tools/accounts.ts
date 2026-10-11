@@ -86,7 +86,12 @@ export function registerAccountTools(
         description:
           "Start adding an email account. For Outlook this returns a device code " +
           "the user must enter at the verification URL; then call `complete_add_account` " +
-          "with the returned `handle` to finalize.",
+          "with the returned `handle` to finalize. For Gmail, share the authorization " +
+          "link AND explicitly ask the user to paste the full final redirected URL " +
+          "from the browser address bar after consent, even if the callback page fails " +
+          "to load. Do not just ask them to say when they are done. Pass that URL as " +
+          "`authorizationResponse` to `complete_add_account` with provider 'gmail' " +
+          "and the returned handle. Follow the returned verification.message instructions.",
         inputSchema: z.object({
           provider: providerIdEnum.describe("Email backend. 'outlook' (Microsoft Graph) and 'imap' are fully implemented."),
           email: z
@@ -134,8 +139,12 @@ export function registerAccountTools(
       "complete_add_account",
       {
         description:
-          "Poll/finalize a pending add_account flow. Returns `pending` until the user " +
-          "completes the device-code step, then `ready` with the persisted account.",
+          "Poll/finalize a pending add_account flow. For Outlook, poll after the user " +
+          "completes the device-code step. For Gmail, pass the full final redirected " +
+          "URL supplied by the user as authorizationResponse, with provider 'gmail' " +
+          "and the original handle; preserve all query parameters, including code " +
+          "and state. Polling without the URL only works if the server received the " +
+          "browser callback automatically. Returns ready when the account is persisted.",
         inputSchema: z.object({
           provider: providerIdEnum,
           handle: z.string().min(1),
@@ -143,7 +152,7 @@ export function registerAccountTools(
             .string()
             .optional()
             .describe(
-              "For OAuth providers such as Gmail: paste the full final redirected URL from the browser after consent.",
+              "For Gmail: the full final URL the user copies from the browser address bar after consent, including code and state, even if the callback page cannot load.",
             ),
           code: z
             .string()

@@ -8,9 +8,10 @@ const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH2_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 
-// Public OAuth client identifier for the Hypermail MCP Google app.
+// Intentionally distributed public Desktop credentials, not confidential server credentials.
 const DEFAULT_GMAIL_CLIENT_ID =
   "402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com";
+const DEFAULT_GMAIL_CLIENT_SECRET = "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";
 
 const DEFAULT_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
@@ -241,6 +242,8 @@ export async function beginAuthorizationCode(
 ): Promise<AuthorizationCodeBegin> {
   const scopes = options.scopes ?? DEFAULT_SCOPES;
   const clientId = options.clientId?.trim() || DEFAULT_GMAIL_CLIENT_ID;
+  const clientSecret = options.clientSecret?.trim() ||
+    (clientId === DEFAULT_GMAIL_CLIENT_ID ? DEFAULT_GMAIL_CLIENT_SECRET : undefined);
 
   const localCallback = options.redirectUri ? undefined : await startLocalCallbackServer();
   const redirectUri = options.redirectUri ?? localCallback?.redirectUri;
@@ -270,16 +273,22 @@ export async function beginAuthorizationCode(
     userCode: "",
     verificationUri,
     message:
-      "Open this URL in a browser to authorize Gmail access. After approval, " +
-      "the account setup should complete automatically when the agent polls. " +
-      "If the browser cannot reach the callback, paste the final redirected URL back to the agent.",
+      "Agent: when sharing this Gmail authorization link, explicitly tell the user to " +
+      "open it, check the expected Google app, and approve access. Then ask them to " +
+      "copy the FULL final URL from the browser address bar and paste it back in this chat, " +
+      "including all query parameters (especially code and state), even if the callback " +
+      "page cannot load. Saying 'done' is not enough to complete a manual callback. " +
+      "Pass that URL as authorizationResponse to complete_add_account with provider " +
+      "'gmail' and the handle returned by add_account. An automatic callback may also " +
+      "complete the flow when polled, but do not omit the URL-return instructions when " +
+      "presenting the link. Treat the callback URL as sensitive; do not share it publicly.",
     expiresAt,
     state,
     codeVerifier,
     redirectUri,
     scopes,
     clientId,
-    clientSecret: options.clientSecret || undefined,
+    clientSecret,
     cancel() {
       localCallback?.cancel();
     },

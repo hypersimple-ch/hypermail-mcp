@@ -66,8 +66,8 @@ Common env vars:
 - `HYPERMAIL_KEY` — encryption key/passphrase for token storage
 - `HYPERMAIL_OUTLOOK_CLIENT_ID` — optional Azure/Entra app registration client ID
 - `HYPERMAIL_OUTLOOK_TENANT_ID` — optional Azure/Entra tenant ID
-- `HYPERMAIL_GMAIL_CLIENT_ID` — Google OAuth client ID, required when adding Gmail accounts
-- `HYPERMAIL_GMAIL_CLIENT_SECRET` — Google OAuth client secret, if issued
+- `HYPERMAIL_GMAIL_CLIENT_ID` — optional Google OAuth client override; blank uses the built-in public Desktop client
+- `HYPERMAIL_GMAIL_CLIENT_SECRET` — optional secret override; blank uses the built-in secret only for the built-in client ID, never a custom ID
 
 ## Key Dependencies
 

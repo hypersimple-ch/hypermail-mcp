@@ -47,7 +47,7 @@ assistant that accesses your email. The code is open under the MIT license.
 
 | Mailbox | Connection | Setup |
 | --- | --- | --- |
-| **Gmail / Google Workspace** | Gmail API with Google OAuth | Configure your Google OAuth client, then authorize the account. [Gmail setup](#gmail) |
+| **Gmail / Google Workspace** | Gmail API with Google OAuth | Authorize with the built-in Desktop client; custom OAuth clients remain optional. [Gmail setup](#gmail) |
 | **Outlook / Microsoft 365** | Microsoft Graph with device-code sign-in | Sign in with a personal or work Microsoft account. [Outlook setup](#outlook) |
 | **IMAP mailboxes** | IMAP for reading and managing mail; SMTP for sending | Provide your provider's IMAP/SMTP settings and password or app password. [IMAP setup](#imap) |
 
@@ -93,8 +93,8 @@ Restart or reload your MCP client, then ask your agent:
 
 > Connect my Outlook account using Hypermail.
 
-The agent calls `add_account` and guides you through sign-in. For Gmail, first
-configure your Google OAuth credentials in the server environment; for IMAP,
+The agent calls `add_account` and guides you through sign-in. Gmail needs no
+OAuth environment variables with the built-in Desktop client; for IMAP,
 provide the mailbox's connection settings. See [add-account flows](#add-account-flows)
 for each provider. Add more accounts to the same server as needed.
 
@@ -217,7 +217,7 @@ hypermail-mcp
 | `HYPERMAIL_OUTLOOK_CLIENT_ID` | Optional custom Azure/Entra public client ID | Built-in public client |
 | `HYPERMAIL_OUTLOOK_TENANT_ID` | Optional Outlook tenant/authority selector | `common` |
 | `HYPERMAIL_GMAIL_CLIENT_ID` | Optional Google OAuth client ID override | Built-in Hypermail MCP client when unset, empty, or whitespace-only |
-| `HYPERMAIL_GMAIL_CLIENT_SECRET` | Google OAuth client secret, when issued by the client type | unset |
+| `HYPERMAIL_GMAIL_CLIENT_SECRET` | Optional Google OAuth secret override | Built-in Desktop secret only when the selected ID is the Hypermail client |
 | `HYPERMAIL_GMAIL_REDIRECT_URI` | Hosted Gmail OAuth callback URI | Local loopback callback when unset |
 | `HYPERMAIL_TOOLS_ENABLED` | Comma-separated tool allowlist | Empty/unset means no filtering |
 | `HYPERMAIL_TOOLS_DISABLED` | Comma-separated tool blocklist | Empty/unset means no filtering |
@@ -227,20 +227,45 @@ hypermail-mcp
 
 ### Gmail OAuth client
 
-By default, new Gmail authorization flows use the Hypermail MCP Google client
-`402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com`.
-A non-empty `HYPERMAIL_GMAIL_CLIENT_ID` overrides it; an explicitly configured
-older client is not replaced automatically. Client secrets are not bundled:
-set `HYPERMAIL_GMAIL_CLIENT_SECRET` to the secret belonging to the selected
-client when required. Leaving the client ID blank does not make the secret
-optional.
+New Gmail authorization flows use the built-in Hypermail MCP Desktop client
+`402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com`
+and its matching credential pair, without OAuth environment variables.
+These are intentionally distributed public-client credentials, not confidential
+server credentials. Access and refresh tokens remain private on your installation.
 
-Local authorization uses `http://127.0.0.1:33333/callback`. For hosted HTTP,
-configure a Google OAuth Web application client with your exact public callback
-URI and set its ID, secret, and `HYPERMAIL_GMAIL_REDIRECT_URI`.
+A nonblank `HYPERMAIL_GMAIL_CLIENT_ID` overrides the client. A custom client ID
+never receives the built-in secret. A nonblank `HYPERMAIL_GMAIL_CLIENT_SECRET`
+always overrides secret selection, including for the built-in ID; whitespace is
+trimmed and blank values behave as absent. Remove incorrect explicit secret
+overrides to use the built-in pair.
+
+Run the MCP on your own computer or your own server. Hypermail's publisher
+operates no MCP hosting, OAuth relay, token-exchange backend, or token storage
+for this onboarding flow. Local authorization uses
+`http://127.0.0.1:33333/callback`. For a remote MCP, the browser's localhost
+refers to the browser machine, not the server; use the manual URL handoff below.
+For a public callback on your own hosted HTTP installation, configure your own
+Google OAuth Web application client with the exact callback URI and set its ID,
+secret, and `HYPERMAIL_GMAIL_REDIRECT_URI`.
 In Google Cloud, check the app's consent-screen name, publishing status, audience,
 and test users. Choosing the correct client does not bypass Google's access
 restrictions.
+
+When presenting the Gmail authorization link, agents must also ask the user to
+copy the full final URL from the browser address bar after approval and paste
+it back into the chat, including `code` and `state`. This applies even if the
+callback page cannot load; a reply such as “done” is not a substitute for the URL.
+Pass it as `authorizationResponse` to `complete_add_account` with provider
+`gmail` and the original handle. Keep the MCP process alive between these calls.
+Automatic callback capture remains supported. Treat the callback URL as sensitive
+and do not share it publicly; handing it through chat is a usability/security
+tradeoff, not equivalent to a same-device callback.
+
+If token exchange reports an invalid client secret, verify that
+`HYPERMAIL_GMAIL_CLIENT_SECRET` belongs to the selected `HYPERMAIL_GMAIL_CLIENT_ID`
+in the server's effective environment, then restart and generate a fresh
+authorization link. Changing the client ID does not update its secret.
+Never print the secret in logs or paste it into chat.
 
 Restart the MCP server after changing its environment and call `add_account`
 again to generate a fresh link. Existing accounts retain the OAuth credentials
@@ -248,6 +273,11 @@ stored when they were authorized. Validate a new connection by checking the
 expected app in Google consent, completing authorization, confirming
 `complete_add_account` returns `ready` and `list_accounts` includes the account,
 then calling `list_emails` with `limit: 1` to prove Gmail access.
+
+Stored accounts are not migrated to the built-in pair. Accounts with stale or
+missing OAuth credentials must reauthorize with `add_account` and
+`complete_add_account`; changing environment settings does not repair their
+stored credential pair.
 
 
 Per-tool filtering (`HYPERMAIL_TOOLS_ENABLED` / `HYPERMAIL_TOOLS_DISABLED`) lets
