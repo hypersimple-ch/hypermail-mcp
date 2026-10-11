@@ -216,7 +216,7 @@ hypermail-mcp
 | `HYPERMAIL_HTTP_HOST` | HTTP bind host | `127.0.0.1`; invalid HTTP-mode values warn and fall back |
 | `HYPERMAIL_OUTLOOK_CLIENT_ID` | Optional custom Azure/Entra public client ID | Built-in public client |
 | `HYPERMAIL_OUTLOOK_TENANT_ID` | Optional Outlook tenant/authority selector | `common` |
-| `HYPERMAIL_GMAIL_CLIENT_ID` | Google OAuth client ID | Required when adding a Gmail account |
+| `HYPERMAIL_GMAIL_CLIENT_ID` | Optional Google OAuth client ID override | Built-in Hypermail MCP client when unset, empty, or whitespace-only |
 | `HYPERMAIL_GMAIL_CLIENT_SECRET` | Google OAuth client secret, when issued by the client type | unset |
 | `HYPERMAIL_GMAIL_REDIRECT_URI` | Hosted Gmail OAuth callback URI | Local loopback callback when unset |
 | `HYPERMAIL_TOOLS_ENABLED` | Comma-separated tool allowlist | Empty/unset means no filtering |
@@ -224,6 +224,31 @@ hypermail-mcp
 | `HYPERMAIL_DEBUG` | Enable structured debug logs to stderr (`1`, `true`, `yes`, `on`, or `debug`) | Disabled by default |
 
 **Priority order:** selected CLI flags > `HYPERMAIL_*` env vars > hardcoded defaults.
+
+### Gmail OAuth client
+
+By default, new Gmail authorization flows use the Hypermail MCP Google client
+`402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com`.
+A non-empty `HYPERMAIL_GMAIL_CLIENT_ID` overrides it; an explicitly configured
+older client is not replaced automatically. Client secrets are not bundled:
+set `HYPERMAIL_GMAIL_CLIENT_SECRET` to the secret belonging to the selected
+client when required. Leaving the client ID blank does not make the secret
+optional.
+
+Local authorization uses `http://127.0.0.1:33333/callback`. For hosted HTTP,
+configure a Google OAuth Web application client with your exact public callback
+URI and set its ID, secret, and `HYPERMAIL_GMAIL_REDIRECT_URI`.
+In Google Cloud, check the app's consent-screen name, publishing status, audience,
+and test users. Choosing the correct client does not bypass Google's access
+restrictions.
+
+Restart the MCP server after changing its environment and call `add_account`
+again to generate a fresh link. Existing accounts retain the OAuth credentials
+stored when they were authorized. Validate a new connection by checking the
+expected app in Google consent, completing authorization, confirming
+`complete_add_account` returns `ready` and `list_accounts` includes the account,
+then calling `list_emails` with `limit: 1` to prove Gmail access.
+
 
 Per-tool filtering (`HYPERMAIL_TOOLS_ENABLED` / `HYPERMAIL_TOOLS_DISABLED`) lets
 operators ship minimal agent-facing surfaces. If both non-empty lists are set,
