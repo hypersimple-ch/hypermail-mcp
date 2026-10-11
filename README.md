@@ -475,6 +475,13 @@ src/
 
 ## Release notes
 
+### v0.7.30 — Gmail authentication and archiving fixes
+
+- Gmail OAuth defaults to the built-in Hypermail MCP client when no custom
+  client ID is configured. Hosted deployments still require a Web application
+  client with their registered callback URL.
+- Gmail accounts connected over IMAP use native Gmail archiving.
+
 ### v0.7.29 — Package documentation
 
 - Clarified the open-source, multi-provider email server positioning and its
