@@ -503,6 +503,20 @@ src/
 
 ## Release notes
 
+### v0.7.31 — Zero-config Gmail Desktop authorization
+
+- New Gmail authorization flows use the matching public Desktop client ID and
+  secret without OAuth environment variables. Custom client IDs never inherit
+  the built-in secret; explicit secret overrides remain supported.
+- Agents request the full final callback URL after Google consent, preserving
+  `code`, `state`, and the original handle for manual completion on remote MCPs.
+  Keep the MCP process alive between authorization calls.
+- Stored accounts retain their original credentials; stale or incomplete pairs
+  require reauthorization. Public hosted callbacks still require a custom Web
+  application client.
+- Verified fresh manual authorization, account listing, bounded Gmail reads,
+  real refresh-token exchange, and custom-client isolation.
+
 ### v0.7.30 — Gmail authentication and archiving fixes
 
 - Gmail OAuth defaults to the built-in Hypermail MCP client when no custom

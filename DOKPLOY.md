@@ -102,8 +102,14 @@ Set these in the **Environment** tab — only for providers you use:
 | `HYPERMAIL_OUTLOOK_CLIENT_ID` | Outlook |
 | `HYPERMAIL_OUTLOOK_TENANT_ID` | Outlook |
 | `HYPERMAIL_GMAIL_CLIENT_ID` | Gmail (blank uses the built-in Hypermail MCP client) |
-| `HYPERMAIL_GMAIL_CLIENT_SECRET` | Gmail |
+| `HYPERMAIL_GMAIL_CLIENT_SECRET` | Gmail (optional override; built-in secret only for the built-in Desktop ID) |
 | `HYPERMAIL_GMAIL_REDIRECT_URI` | Gmail hosted OAuth callback |
+
+For remote authorization without a public OAuth callback, leave Gmail OAuth
+variables blank to use the built-in Desktop pair. Open the authorization link
+on your own computer and supply the full final callback URL to
+`complete_add_account` with the original handle. Keep the MCP process alive
+between calls; localhost refers to the browser machine, not this deployment.
 
 For hosted Gmail OAuth, create a Google OAuth **Web application** client, set
 its `HYPERMAIL_GMAIL_CLIENT_ID` and `HYPERMAIL_GMAIL_CLIENT_SECRET`, and register
