@@ -37,6 +37,24 @@ export function resolveTrashMailbox(
   return "Trash";
 }
 
+/** Gmail advertises All Mail as \All, not as a separate archive folder. */
+export function resolveArchiveMailbox(
+  mailboxes: Iterable<ImapMailboxEntry>,
+): string {
+  let archivePath: string | undefined;
+  for (const mailbox of mailboxes) {
+    const specialUse = mailbox.specialUse?.toLowerCase();
+    const flags = mailbox.flags ? Array.from(mailbox.flags) : [];
+    if (specialUse === "\\all" || flags.some((flag) => flag.toLowerCase() === "\\all")) {
+      return mailbox.path;
+    }
+    if (specialUse === "\\archive" || flags.some((flag) => flag.toLowerCase() === "\\archive")) {
+      archivePath ??= mailbox.path;
+    }
+  }
+  return archivePath ?? "Archive";
+}
+
 export function resolveDraftMailbox(
   mailboxes: Iterable<ImapMailboxEntry>,
 ): string {

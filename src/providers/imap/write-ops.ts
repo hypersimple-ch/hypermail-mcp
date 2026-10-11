@@ -20,6 +20,7 @@ import {
   findAttachments,
   isTrashFolderAlias,
   webLinkUnavailableReference,
+  resolveArchiveMailbox,
   resolveDraftMailbox,
   resolveFolder,
   resolveTrashMailbox,
@@ -132,12 +133,35 @@ export async function moveEmail(
 
   const client = clients.get(account);
   const { folder, uid } = decodeId(id);
-  const dest = resolveFolder(destinationId);
+  const archive = destinationId.toLowerCase() === "archive";
+  const dest = archive
+    ? await client.run(async (imap) =>
+        resolveArchiveMailbox((await imap.list()) as Iterable<ImapMailboxEntry>),
+      )
+    : resolveFolder(destinationId);
 
-  return client.withMailbox(folder, async (imap) => {
-    const result = await imap.messageMove(uid, dest, { uid: true });
-    return movedMessageReference(result, dest, id, uid);
+  const result = await client.withMailbox(folder, async (imap) => {
+    if (archive && imap.capabilities.has("X-GM-EXT-1")) {
+      // Native Gmail archive removes only Inbox, preserving other labels.
+      const message = await imap.fetchOne(uid, { uid: true }, { uid: true });
+      if (!message || !message.emailId) throw new Error(`message not found: ${id}`);
+      const updated = await imap.messageFlagsRemove(uid, ["\\Inbox"], { uid: true, useLabels: true });
+      if (!updated) throw new Error(`failed to archive Gmail message: ${id}`);
+      return { emailId: message.emailId };
+    }
+    const moved = await imap.messageMove(uid, dest, { uid: true });
+    return movedMessageReference(moved, dest, id, uid);
   });
+  if ("emailId" in result) {
+    return client.withMailbox(dest, async (imap) => {
+      const uids = await imap.search({ emailId: result.emailId }, { uid: true });
+      if (!uids || uids.length !== 1) {
+        throw new Error(`Gmail message archived but could not be resolved in ${dest}: ${id}`);
+      }
+      return webLinkUnavailableReference(encodeId(dest, uids[0]!));
+    });
+  }
+  return result;
 }
 
 export async function trashEmail(

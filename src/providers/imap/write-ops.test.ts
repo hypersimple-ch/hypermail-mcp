@@ -454,7 +454,8 @@ describe("IMAP draft write operations", () => {
   it("uses UIDPLUS destination IDs for moves and preserves the source ID without a map", async () => {
     const mappedMove = vi.fn(async () => ({ uidMap: new Map([[5, 42]]) }));
     const mappedClient = {
-      withMailbox: vi.fn(async (_folder, fn) => fn({ messageMove: mappedMove })),
+      run: vi.fn(async (fn) => fn({ list: async () => [] })),
+      withMailbox: vi.fn(async (_folder, fn) => fn({ capabilities: new Map(), messageMove: mappedMove })),
     };
     await expect(moveEmail(clientsFor(mappedClient), account, "INBOX/5", "archive")).resolves.toEqual({
       id: "Archive/42",
@@ -463,7 +464,8 @@ describe("IMAP draft write operations", () => {
 
     const unmappedMove = vi.fn(async () => false);
     const unmappedClient = {
-      withMailbox: vi.fn(async (_folder, fn) => fn({ messageMove: unmappedMove })),
+      run: vi.fn(async (fn) => fn({ list: async () => [] })),
+      withMailbox: vi.fn(async (_folder, fn) => fn({ capabilities: new Map(), messageMove: unmappedMove })),
     };
     const moved = await moveEmail(clientsFor(unmappedClient), account, "INBOX/5", "Archive");
     expect(moved).toEqual({
@@ -651,5 +653,75 @@ describe("IMAP direct reference sending", () => {
       expect(parsed.inReplyTo).toBeUndefined();
       expect(parsed.attachments.map((attachment) => [attachment.filename, attachment.content.toString()]).sort()).toEqual([["same.pdf", "one"], ["same.pdf", "two"], ["same.pdf", "two"], ["café.pdf", "unicode"], ["image.png", "image"], ["user.txt", "user supplied"]].sort());
     }
+  });
+});
+
+describe("native IMAP archive", () => {
+  it.each([
+    { path: "[Gmail]/Tous les messages", specialUse: "\\All" },
+    { path: "[GoogleMail]/Alle Nachrichten", flags: new Set(["\\All"]) },
+  ])("archives Gmail into $path without adding or removing custom labels", async (allMail) => {
+    const labels = new Set(["\\Inbox", "Client", "Important"]);
+    let selected = "";
+    const imap = {
+      capabilities: new Map([["X-GM-EXT-1", true]]),
+      list: async () => [{ path: "Archive", specialUse: "\\Archive" }, allMail],
+      fetchOne: async (uid: number) =>
+        (selected === "INBOX" && uid === 5) || (selected === allMail.path && uid === 42)
+          ? { uid, emailId: "123456789" }
+          : false,
+      messageFlagsRemove: async (uid: number, removed: string[], options: { useLabels?: boolean }) => {
+        if ((uid !== 5 && uid !== 42) || !options.useLabels) throw new Error("invalid label update");
+        for (const label of removed) labels.delete(label);
+        return true;
+      },
+      search: async ({ emailId }: { emailId: string }) =>
+        selected === allMail.path && emailId === "123456789" ? [42] : [],
+      messageMove: async () => { throw new Error("Gmail archive must not move between labels"); },
+    };
+    const client = {
+      run: async (fn: (imap: unknown) => Promise<unknown>) => fn(imap),
+      withMailbox: async (folder: string, fn: (imap: unknown) => Promise<unknown>) => {
+        selected = folder;
+        return fn(imap);
+      },
+    };
+    const reference = await moveEmail(clientsFor(client), account, "INBOX/5", "archive");
+    expect(labels).toEqual(new Set(["Client", "Important"]));
+    expect(reference.id).toBe(`${allMail.path}/42`);
+    await moveEmail(clientsFor(client), account, reference.id, "ARCHIVE");
+    expect(labels).toEqual(new Set(["Client", "Important"]));
+  });
+
+  it("uses a localized archive mailbox on ordinary IMAP without changing custom moves", async () => {
+    const mailboxes = new Map([
+      ["INBOX", new Set([5])],
+      ["Archives locales", new Set<number>()],
+      ["Client", new Set<number>()],
+    ]);
+    let selected = "";
+    const imap = {
+      capabilities: new Map(),
+      list: async () => [{ path: "Archives locales", flags: ["\\Archive"] }],
+      messageMove: async (uid: number, destination: string) => {
+        if (!mailboxes.get(selected)?.delete(uid)) throw new Error("missing source");
+        mailboxes.get(destination)!.add(42);
+        return { uidMap: new Map([[uid, 42]]) };
+      },
+    };
+    const client = {
+      run: async (fn: (imap: unknown) => Promise<unknown>) => fn(imap),
+      withMailbox: async (folder: string, fn: (imap: unknown) => Promise<unknown>) => {
+        selected = folder;
+        return fn(imap);
+      },
+    };
+    const archived = await moveEmail(clientsFor(client), account, "INBOX/5", "archive");
+    expect(archived.id).toBe("Archives locales/42");
+    expect(mailboxes.get("INBOX")).toEqual(new Set());
+    const moved = await moveEmail(clientsFor(client), account, archived.id, "Client");
+    expect(moved.id).toBe("Client/42");
+    expect(mailboxes.get("Archives locales")).toEqual(new Set());
+    expect(mailboxes.get("Client")).toEqual(new Set([42]));
   });
 });

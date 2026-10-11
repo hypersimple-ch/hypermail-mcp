@@ -259,7 +259,7 @@ it returns an unsupported reason and never fabricates an `imap://` URL.
 | `search_emails` | `account?`, `query?`, `from?`, `to?`, `cc?`, `limit?` | Provide at least one of `query`, `from`, `to`, or `cc`; distinct criteria combine with AND. `cc` searches CC or BCC. Search one account when `account` is provided, or omit it to search all registered accounts in parallel. Returns account-annotated summaries and partial per-account errors. Address filters are provider-agnostic; Outlook search results with malformed IDs are normalized to readable immutable IDs when possible. |
 | `read_email` | `account`, `id`, `format?` | Returns full body + recipients + attachment metadata. `format`: `markdown` (default) or explicit `html`; `text` is rejected before provider reads. Messages without HTML retain their literal text body. Outlook retries malformed/stale IDs through Graph ID translation before failing. |
 | `read_attachment` | `account`, `messageId`, `attachmentId` | Download an attachment to a temporary file and return its path plus the parent message's web link or unavailable reason. |
-| `archive_email` | `account`, `id` | Move a message to the Archive folder and return its post-operation ID/link. |
+| `archive_email` | `account`, `id` | Archive natively and return the post-operation ID/link. Gmail removes only the Inbox label, retaining other labels and keeping the message in All Mail; other providers use their archive folder. |
 | `trash_email` | `account`, `id` | Move a message to Deleted Items (trash) and return its post-operation ID/link. |
 | `move_email` | `account`, `id`, `destination` | Move to any folder by well-known name (`inbox`, `drafts`, etc.) or custom folder ID, returning the post-operation ID/link. |
 | `send_email` | `account`, `to[]`, `cc?`, `bcc?`, `subject`, `body`, `include_signature`, `inReplyTo`, `replyAll?`, `forwardMessageId?`, `attachments?` | Send an email. `body` is Markdown only, converted to HTML via `marked`; raw HTML is rejected. Use a blank line between paragraphs. Account styles apply independently of `include_signature`; the saved HTML signature is appended when true. `inReplyTo` sends as threaded reply; `forwardMessageId` sends as forward. `inReplyTo` is required — set to `false` for new emails. `attachments` is an optional array of `{filePath, name?}` — files are read from disk and encoded automatically. |
@@ -272,6 +272,14 @@ it returns an unsupported reason and never fabricates an `imap://` URL.
 | `rename_folder` | `account`, `folderId`, `newName` | Rename an existing mail folder. |
 | `mark_read` | `account`, `id` | Mark a message as read. |
 | `mark_unread` | `account`, `id` | Mark a message as unread. |
+
+Gmail archiving never creates or adds an `Archive` / `Archivé` label. This
+applies to both `archive_email` and `move_email(destination: "archive")`.
+The Gmail API removes `INBOX`; Gmail over IMAP removes `\Inbox` using
+`X-GM-LABELS` and resolves the resulting message ID in the server-advertised
+`\All` mailbox, including localized mailbox names. Ordinary IMAP servers use
+their advertised `\Archive` / `\All` mailbox, falling back to `Archive` when
+neither is advertised. Existing custom archive labels are left untouched.
 
 ## Pull new emails
 

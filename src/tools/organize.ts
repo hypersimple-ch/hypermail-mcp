@@ -68,8 +68,10 @@ export function registerOrganizeTools(
       "archive_email",
       {
         description:
-          "Move a message to the Archive folder. Returns `webUrl`, the shareable native web-client " +
-          "link for the post-operation message; it may be omitted with `webUrlUnavailableReason`.",
+          "Archive a message using the provider-native behavior: Gmail removes only the Inbox label " +
+          "(the message stays in All Mail); other providers use their archive folder. " +
+          "Returns `webUrl`, the shareable native web-client link for the post-operation message; " +
+          "it may be omitted with `webUrlUnavailableReason`.",
         inputSchema: archiveMoveSchema,
         outputSchema: archiveOutputSchema,
       },
