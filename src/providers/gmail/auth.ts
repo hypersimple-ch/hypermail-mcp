@@ -8,6 +8,10 @@ const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_OAUTH2_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 
+// Public OAuth client identifier for the Hypermail MCP Google app.
+const DEFAULT_GMAIL_CLIENT_ID =
+  "402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com";
+
 const DEFAULT_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
 ];
@@ -236,12 +240,7 @@ export async function beginAuthorizationCode(
   options: AuthorizationCodeBeginOptions = {},
 ): Promise<AuthorizationCodeBegin> {
   const scopes = options.scopes ?? DEFAULT_SCOPES;
-  const clientId = options.clientId;
-  if (!clientId) {
-    throw new Error(
-      "HYPERMAIL_GMAIL_CLIENT_ID is required for Gmail OAuth — set HYPERMAIL_GMAIL_CLIENT_ID before adding a Gmail account",
-    );
-  }
+  const clientId = options.clientId?.trim() || DEFAULT_GMAIL_CLIENT_ID;
 
   const localCallback = options.redirectUri ? undefined : await startLocalCallbackServer();
   const redirectUri = options.redirectUri ?? localCallback?.redirectUri;

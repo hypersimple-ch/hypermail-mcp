@@ -101,14 +101,17 @@ Set these in the **Environment** tab — only for providers you use:
 |----------|----------|
 | `HYPERMAIL_OUTLOOK_CLIENT_ID` | Outlook |
 | `HYPERMAIL_OUTLOOK_TENANT_ID` | Outlook |
-| `HYPERMAIL_GMAIL_CLIENT_ID` | Gmail |
+| `HYPERMAIL_GMAIL_CLIENT_ID` | Gmail (blank uses the built-in Hypermail MCP client) |
 | `HYPERMAIL_GMAIL_CLIENT_SECRET` | Gmail |
 | `HYPERMAIL_GMAIL_REDIRECT_URI` | Gmail hosted OAuth callback |
 
-For hosted Gmail OAuth, create a Google OAuth **Web application** client and
-register the exact callback URL, for example
+For hosted Gmail OAuth, create a Google OAuth **Web application** client, set
+its `HYPERMAIL_GMAIL_CLIENT_ID` and `HYPERMAIL_GMAIL_CLIENT_SECRET`, and register
+the exact callback URL, for example
 `https://mail-api.example.com/oauth/gmail/callback`. Set the same value as
-`HYPERMAIL_GMAIL_REDIRECT_URI`. Google's official Gmail MCP also uses
+`HYPERMAIL_GMAIL_REDIRECT_URI`. The default client does not automatically authorize
+your deployment's callback URL. Check the consent-screen audience and test users,
+then redeploy to reload environment changes. Google's official Gmail MCP also uses
 OAuth 2.0; service accounts only work for Google Workspace domain-wide
 delegation and won't access consumer `@gmail.com` inboxes.
 

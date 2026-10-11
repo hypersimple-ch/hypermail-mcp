@@ -10,8 +10,14 @@ afterEach(() => {
 });
 
 describe("Gmail authorization-code OAuth", () => {
-  it("names HYPERMAIL_GMAIL_CLIENT_ID when client ID is missing", async () => {
-    await expect(beginAuthorizationCode()).rejects.toThrow("HYPERMAIL_GMAIL_CLIENT_ID");
+  it.each([undefined, "", " \t "])("uses the Hypermail app for a blank client ID (%j)", async (clientId) => {
+    const flow = await beginAuthorizationCode({
+      clientId,
+      redirectUri: "http://127.0.0.1:33333/callback",
+    });
+    expect(new URL(flow.verificationUri).searchParams.get("client_id")).toBe(
+      "402846182885-uucmvo5gbgd0u2m49hk2k3ng6vtemuql.apps.googleusercontent.com",
+    );
   });
 
   it("builds a Gmail OAuth URL with PKCE, state, and a configured redirect URI", async () => {
