@@ -4,7 +4,8 @@ dist/
 .pi/mcp.json
 *.log
 .env
-.env.local
+.env.*
+!.env.example
 .DS_Store
 coverage/
 .vitest-cache/
