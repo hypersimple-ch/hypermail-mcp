@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AccountRecord, AccountStore } from "../../store/account-store.js";
+import type * as GmailAuth from "./auth.js";
 import {
   beginAuthorizationCode,
   completeAuthorizationCode,
@@ -9,7 +10,7 @@ import { GmailClientFactory } from "./client.js";
 import { GmailProvider } from "./index.js";
 
 vi.mock("./auth.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./auth.js")>()),
+  ...(await importOriginal<typeof GmailAuth>()),
   beginAuthorizationCode: vi.fn(),
   completeAuthorizationCode: vi.fn(),
 }));
