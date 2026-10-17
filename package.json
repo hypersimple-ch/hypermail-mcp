@@ -1,6 +1,6 @@
 {
   "name": "hypermail-mcp",
-  "version": "0.7.31",
+  "version": "0.7.32",
   "description": "Open-source MCP server for AI agents to manage Gmail, Outlook, Microsoft 365, and IMAP mailboxes through one unified interface.",
   "type": "module",
   "bin": {
