@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ResolvedTools } from "../config.js";
 import type { AccountRecord } from "../store/account-store.js";
+import type { EmailProvider } from "../providers/types.js";
 import { markdownToHtml } from "../markdown-to-html.js";
 import { THREAD_MARKER } from "../providers/outlook/write-ops.js";
 
@@ -87,7 +88,7 @@ export const accountSummaryOutputSchema = z.object({
   provider: providerIdEnum,
   displayName: z.string().optional(),
   addedAt: z.string(),
-  hasSignature: z.boolean(),
+  hasSignature: z.boolean().describe("Locally stored custom-signature presence, not native availability. Use get_account_settings for the effective signature."),
   hasStyle: z.boolean(),
 });
 
@@ -103,7 +104,7 @@ export const accountFullOutputSchema = z.object({
   provider: providerIdEnum,
   displayName: z.string().optional(),
   addedAt: z.string(),
-  signature: z.string().optional(),
+  signature: z.string().optional().describe("Locally stored custom HTML signature; fallback for Gmail when no native signature is returned."),
   style: styleOutputSchema.optional(),
 });
 
@@ -167,6 +168,13 @@ export const folderInfoOutputSchema = z.object({
 });
 
 // ── body composition helpers ──
+
+export async function resolveAccountSignature(
+  provider: EmailProvider,
+  account: AccountRecord,
+): Promise<string | undefined> {
+  return (await provider.getSignature?.(account)) || account.signature || undefined;
+}
 
 export interface ComposeBodyInput {
   body: string;

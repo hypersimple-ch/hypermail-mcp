@@ -301,11 +301,11 @@ it returns an unsupported reason and never fabricates an `imap://` URL.
 
 | Tool | Inputs | Notes |
 | --- | --- | --- |
-| `list_accounts` | — | Returns registered emails + provider, no secrets. |
+| `list_accounts` | — | Returns registered emails + provider, no secrets. `hasSignature` reports locally stored custom-signature presence only; use `get_account_settings` for the effective signature. |
 | `add_account` | `provider`, `email?`, `config?` | Starts the provider add flow. Outlook returns a device code; Gmail returns an OAuth URL. Ready account responses include public metadata only and never return stored tokens/passwords. Returns `{handle, verification:{type, userCode, verificationUri, expiresAt, message}}` for pending flows. |
 | `complete_add_account` | `provider`, `handle`, `authorizationResponse?`, `code?`, `state?` | Returns `pending` / `ready` / `expired` / `error`. Ready account responses include public metadata only and never return stored tokens/passwords. Gmail accepts a pasted final redirected URL or raw code/state for remote-safe completion. |
-| `get_account_settings` | `account` | Get signature (HTML) and style preferences for an account. |
-| `set_account_settings` | `account`, `signature?`, `signaturePath?`, `style?` | Set signature HTML (inline or via file path) and font preferences. |
+| `get_account_settings` | `account` | Get the effective HTML signature (Gmail first, local fallback only on successful empty lookup) and local style preferences. Native lookup errors fail rather than returning local fallback. |
+| `set_account_settings` | `account`, `signature?`, `signaturePath?`, `style?` | Set local signature HTML (inline or via file path) and font preferences. Returns saved local settings; Gmail's signature is never changed. Clearing local does not clear Gmail. |
 | `remove_account` | `email` | Deletes tokens for the account. |
 | `list_emails` | `account`, `folder?`, `limit?`, `unreadOnly?`, `skip?` | Defaults: folder=`inbox`, limit=25. Supports pagination via `skip` — response includes `hasMore`. Outlook accepts well-known folder names, folder IDs, and falls back from localized display names to matching folder IDs. |
 | `get_new_emails` | `account?`, `limit?` | Pull new inbox emails not previously returned by this tool. `limit` defaults to 10 and is global when `account` is omitted. Returns full markdown bodies with attachment metadata; bodies may be truncated. |
@@ -325,6 +325,24 @@ it returns an unsupported reason and never fabricates an `imap://` URL.
 | `rename_folder` | `account`, `folderId`, `newName` | Rename an existing mail folder. |
 | `mark_read` | `account`, `id` | Mark a message as read. |
 | `mark_unread` | `account`, `id` | Mark a message as unread. |
+
+When `include_signature` is true, Gmail reads the HTML signature for the account's
+From address via `SendAs.signature`. Nonempty native HTML takes precedence over
+the locally stored fallback; only a successful empty result permits fallback.
+Lookup errors fail before sending or mutating a draft, even if a local signature
+exists. Other providers continue using the local signature. Inclusion fails if
+neither source is available; do not also type a signature into the body.
+
+`include_signature: false` omits both sources without fetching Gmail settings.
+Draft replacement resolves only when replacement content requests inclusion;
+unselected HTML/history stays unchanged. Metadata/attachment-only edits do not
+fetch signatures, and `send_draft` sends the stored draft without re-appending.
+`set_account_settings` manages only local fallback/style; account lifecycle
+responses also describe stored local settings, not native availability.
+
+This uses the existing `gmail.modify` scope and does not write Gmail settings.
+Gmail exposes one signature per sending address through this API, not its named
+signature collection or separate reply defaults.
 
 Gmail archiving never creates or adds an `Archive` / `Archivé` label. This
 applies to both `archive_email` and `move_email(destination: "archive")`.
@@ -502,6 +520,15 @@ src/
 ```
 
 ## Release notes
+
+### Unreleased — Gmail-native signatures
+
+- Explicit signature inclusion and settings inspection prefer Gmail's native HTML
+  signature, with local fallback only after a successful empty lookup. Lookup
+  failures prevent composition mutations; local settings writes remain offline.
+- Signature omission, stored-draft sending, and metadata/attachment-only edits
+  perform no native lookup. Existing unselected draft HTML remains intact.
+
 
 ### v0.7.31 — Zero-config Gmail Desktop authorization
 

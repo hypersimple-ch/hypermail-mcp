@@ -193,6 +193,9 @@ export interface CreateFolderInput {
 export interface EmailProvider {
   readonly id: ProviderId;
 
+  /** Retrieve only the provider-native signature, without local fallback. Lookup failures reject. */
+  getSignature?(account: AccountRecord): Promise<string | undefined>;
+
   addAccount(input: AddAccountInput): Promise<AddAccountResult>;
   /** Optional — only providers with async/manual flows need this. */
   completeAddAccount?(

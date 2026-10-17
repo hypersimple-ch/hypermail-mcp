@@ -16,6 +16,7 @@ import {
   fail,
   errMsg,
   composeBody,
+  resolveAccountSignature,
   shouldRegister,
   emailReferenceOutputSchema,
 } from "./shared.js";
@@ -64,15 +65,20 @@ export function registerComposeTools(
         hasForward: !!args.forwardMessageId,
         attachmentCount: args.attachments?.length ?? 0,
       });
-      if (args.include_signature && !account.signature) {
+      const signature = args.include_signature
+        ? await resolveAccountSignature(provider, account)
+        : undefined;
+      if (args.include_signature && !signature) {
         return fail(
-          "include_signature is true but no signature is configured for this account. " +
-            "Set up a signature first with set_account_settings.",
+          provider.id === "gmail"
+            ? "include_signature is true but no Gmail signature or local fallback signature is configured. Set a signature in Gmail or use set_account_settings to configure a local fallback."
+            : "include_signature is true but no signature is configured for this account. " +
+              "Set up a signature first with set_account_settings.",
         );
       }
       const composed = composeBody({
         body: args.body,
-        signature: account.signature,
+        signature,
         style: account.style,
         includeSignature: args.include_signature,
       });
@@ -187,9 +193,9 @@ export function registerComposeTools(
         description:
           "Send an email from the given account using Markdown only; raw HTML " +
           "is not supported. Use a blank line between paragraphs. Applies account " +
-          "style preferences and appends the saved HTML signature when " +
-          "`include_signature` is true. Returns an error if " +
-          "`include_signature` is true but no signature is configured. " +
+          "style preferences and appends Gmail's signature first, falling back to the local " +
+          "signature only when Gmail returns none, when `include_signature` is true. " +
+          "Do not also include a signature in the body. Fails if no signature exists or lookup fails. " +
           "When `inReplyTo` is set, sends as a reply (or reply-all) which " +
           "preserves thread history and conversation threading. " +
           "When `forwardMessageId` is set, sends as a forward of the " +
@@ -227,9 +233,10 @@ export function registerComposeTools(
         description:
           "Create a draft email from the given account without sending it. " +
           "Body content must be Markdown only, without raw HTML; use a blank line between paragraphs. " +
-          "Works identically to send_email — appends signature when " +
-          "`include_signature` is true, applies style, and supports replies " +
-          "and forwards — but saves the message to the Drafts folder " +
+          "Works identically to send_email — when `include_signature` is true, uses Gmail's " +
+          "signature first and local fallback only when Gmail returns none. Do not also include " +
+          "a signature in the body; fails if no signature exists or lookup fails. Applies style " +
+          "and supports replies and forwards — but saves the message to the Drafts folder " +
           "instead of sending. Returns the draft message ID and the draft's " +
           "Markdown body (`draftMarkdown`). Copy selections from this complete current body " +
           "or read_email in Markdown. Explicit HTML remains available through read_email(format: 'html'). Returns the " +
@@ -302,10 +309,15 @@ export function registerComposeTools(
           }
 
           const replacementText = a.new_text ?? a.body;
-          if (replacementText !== undefined && a.include_signature && !account.signature) {
+          const signature = replacementText !== undefined && a.include_signature
+            ? await resolveAccountSignature(provider, account)
+            : undefined;
+          if (replacementText !== undefined && a.include_signature && !signature) {
             return fail(
-              "include_signature is true but no signature is configured for this account. " +
-                "Set up a signature first with set_account_settings.",
+              provider.id === "gmail"
+                ? "include_signature is true but no Gmail signature or local fallback signature is configured. Set a signature in Gmail or use set_account_settings to configure a local fallback."
+                : "include_signature is true but no signature is configured for this account. " +
+                  "Set up a signature first with set_account_settings.",
             );
           }
 
@@ -315,7 +327,7 @@ export function registerComposeTools(
           if (replacementText !== undefined) {
             const existing = await provider.readEmail(account, a.id);
             const options = {
-              signature: account.signature,
+              signature,
               style: account.style,
               includeSignature: !!a.include_signature,
             };

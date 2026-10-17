@@ -88,6 +88,14 @@ export class GmailProvider implements EmailProvider {
     );
   }
 
+  async getSignature(account: AccountRecord): Promise<string | undefined> {
+    const response = await this.clients.get(account).gmail.users.settings.sendAs.get({
+      userId: "me",
+      sendAsEmail: account.email,
+    });
+    return response.data.signature || undefined;
+  }
+
   // ── account lifecycle ──
 
   async addAccount(input: AddAccountInput): Promise<AddAccountResult> {

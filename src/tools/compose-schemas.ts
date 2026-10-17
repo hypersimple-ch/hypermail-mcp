@@ -14,7 +14,7 @@ export const sendEmailSchema = z.object({
   include_signature: z
     .boolean()
     .describe(
-      "Whether to append the account's saved HTML signature to the email. " +
+      "Whether to append the HTML signature: Gmail first, local fallback only when Gmail returns none; other providers use local. " +
         "If true, don't include a signature in the body param to avoid double signature. " +
         "Returns an error if true but no signature is configured for this account.",
     ),
@@ -99,8 +99,8 @@ export const editDraftSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Whether to append the account's saved HTML signature to the " +
-        "replacement section. If true, don't include a signature in " +
+      "Whether to append the HTML signature to the replacement section: Gmail first, " +
+        "local fallback only when Gmail returns none; other providers use local. If true, don't include a signature in " +
         "`new_text`/`body`. Only meaningful when replacement content is provided. " +
         "Returns an error if true but no signature is configured for this account.",
     ),

@@ -139,6 +139,117 @@ async function withSettingsStore(
   }
 }
 
+async function withProviderSettingsStore(
+  account: AccountRecord,
+  provider: Record<string, unknown>,
+  fn: (dataDir: string, handlers: Map<string, Handler>) => Promise<void>,
+): Promise<void> {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "hypermail-provider-settings-test-"));
+  const key = Buffer.alloc(32, 9);
+  try {
+    const store = await AccountStore.open({ dataDir, key });
+    await store.upsertAccount(account);
+    const handlers = new Map<string, Handler>();
+    const server = {
+      registerTool(name: string, config: { inputSchema: ZodType<Record<string, unknown>> }, handler: Handler) {
+        handlers.set(name, async (args) => handler(config.inputSchema.parse(args)));
+      },
+    };
+    registerAccountTools(server as never, {
+      store,
+      registry: { get: () => provider } as unknown as Registry,
+      tools: {
+        enabledTools: new Set(["get_account_settings", "set_account_settings", "list_accounts"]),
+        disabledTools: null,
+      },
+    });
+    await fn(dataDir, handlers);
+  } finally {
+    vi.restoreAllMocks();
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+}
+
+describe("Gmail account settings", () => {
+  const gmailAccount: AccountRecord = {
+    ...secretAccount,
+    provider: "gmail",
+    signature: "<i>Local</i>",
+    style: { fontFamily: "serif" },
+  };
+
+  it.each([
+    { name: "prefers native over local", native: "<b>Native</b>", local: "<i>Local</i>", expected: "<b>Native</b>" },
+    { name: "uses native without a local signature", native: "<b>Native</b>", local: undefined, expected: "<b>Native</b>" },
+    { name: "falls back after an empty native response", native: "", local: "<i>Local</i>", expected: "<i>Local</i>" },
+    { name: "falls back after an absent native response", native: undefined, local: "<i>Local</i>", expected: "<i>Local</i>" },
+    { name: "returns null when neither source exists", native: undefined, local: undefined, expected: null },
+  ])("$name", async ({ native, local, expected }) => {
+    await withProviderSettingsStore(
+      { ...gmailAccount, signature: local },
+      { getSignature: async () => native },
+      async (dataDir, handlers) => {
+        const result = await handlers.get("get_account_settings")!({ account: gmailAccount.email });
+        expect(structured(result)).toEqual({
+          signature: expected,
+          style: gmailAccount.style,
+        });
+        const reopened = await AccountStore.open({ dataDir, key: Buffer.alloc(32, 9) });
+        expect(reopened.getAccount(gmailAccount.email)?.signature).toBe(local);
+        expect(reopened.getAccount(gmailAccount.email)?.style).toEqual(gmailAccount.style);
+      },
+    );
+  });
+
+  it("returns native lookup errors rather than the configured local fallback", async () => {
+    await withProviderSettingsStore(
+      gmailAccount,
+      { getSignature: async () => { throw new Error("Gmail settings unavailable"); } },
+      async (dataDir, handlers) => {
+        const result = await handlers.get("get_account_settings")!({ account: gmailAccount.email });
+        expect(result).toMatchObject({
+          isError: true,
+          content: [{ type: "text", text: "Gmail settings unavailable" }],
+        });
+        const reopened = await AccountStore.open({ dataDir, key: Buffer.alloc(32, 9) });
+        expect(reopened.getAccount(gmailAccount.email)?.signature).toBe(gmailAccount.signature);
+      },
+    );
+  });
+
+  it("saves and clears only local settings and lists local signature presence without a native request", async () => {
+    const getSignature = vi.fn(async () => "<b>Native</b>");
+    await withProviderSettingsStore(gmailAccount, { getSignature }, async (dataDir, handlers) => {
+      const set = handlers.get("set_account_settings")!;
+      const list = handlers.get("list_accounts")!;
+      expect(structured(await list({}))).toMatchObject({
+        accounts: [{ email: gmailAccount.email, hasSignature: true, hasStyle: true }],
+      });
+
+      const saved = await set({ account: gmailAccount.email, signature: "<u>Updated local</u>" });
+      expect(structured(saved)).toEqual({
+        signature: "<u>Updated local</u>",
+        style: gmailAccount.style,
+      });
+      const afterSave = await AccountStore.open({ dataDir, key: Buffer.alloc(32, 9) });
+      expect(afterSave.getAccount(gmailAccount.email)).toMatchObject({
+        signature: "<u>Updated local</u>",
+        style: gmailAccount.style,
+      });
+
+      const cleared = await set({ account: gmailAccount.email, signature: "" });
+      expect(structured(cleared)).toEqual({ signature: null, style: gmailAccount.style });
+      const afterClear = await AccountStore.open({ dataDir, key: Buffer.alloc(32, 9) });
+      expect(afterClear.getAccount(gmailAccount.email)?.signature).toBeUndefined();
+      expect(afterClear.getAccount(gmailAccount.email)?.style).toEqual(gmailAccount.style);
+      expect(structured(await list({}))).toMatchObject({
+        accounts: [{ email: gmailAccount.email, hasSignature: false, hasStyle: true }],
+      });
+      expect(getSignature).not.toHaveBeenCalled();
+    });
+  });
+});
+
 describe("set_account_settings", () => {
   it("accepts null style and persists clearing without changing omitted signature", async () => {
     await withSettingsStore(async (_store, dataDir, set) => {

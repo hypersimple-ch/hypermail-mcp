@@ -29,6 +29,7 @@ function registerHandler(
   provider: EmailProvider,
   toolName = "edit_draft",
   logger?: Logger,
+  accountFixture: AccountRecord = account,
 ): Handler {
   const handlers = new Map<string, Handler>();
   const server = {
@@ -37,7 +38,7 @@ function registerHandler(
     }),
   };
   const registry = {
-    resolveByEmail: vi.fn(() => ({ provider, account })),
+    resolveByEmail: vi.fn(() => ({ provider, account: accountFixture })),
   } as unknown as Registry;
 
   registerComposeTools(server as never, {
@@ -656,5 +657,231 @@ describe("Markdown draft persistence through provider normalization", () => {
     const result = await registerHandler(provider)({ account: account.email, id: "draft", old_text: "*Alice*", new_text: "**Bob**" });
     expect(structured(result)).toMatchObject({ edited: true, draftMarkdown: "Hello **Bob** <tag> & witness." });
     expect(html).toBe("<p>Hello <strong>Bob</strong> &lt;tag&gt; &amp; witness.</p>");
+  });
+});
+
+describe("effective account signatures", () => {
+  const native = "<b>Native</b>";
+  const local = "<i>Local</i>";
+  const missingGmailSignature =
+    "include_signature is true but no Gmail signature or local fallback signature is configured. Set a signature in Gmail or use set_account_settings to configure a local fallback.";
+
+  function fixture(signature: string | undefined = local) {
+    const gmailAccount: AccountRecord = { ...account, provider: "gmail", signature };
+    let html = "<p>Old answer</p>";
+    const sentBodies: string[] = [];
+    const provider = {
+      id: "gmail",
+      getSignature: vi.fn(async (): Promise<string | undefined> => native),
+      readEmail: vi.fn(async () => ({ id: "draft-1", bodyHtml: html })),
+      sendEmail: vi.fn(async (_account: AccountRecord, input: Parameters<EmailProvider["sendEmail"]>[1]) => {
+        sentBodies.push(input.body);
+        return { id: "sent-1" };
+      }),
+      saveDraft: vi.fn(async (_account: AccountRecord, input: Parameters<EmailProvider["saveDraft"]>[1]) => {
+        html = input.body;
+        return { id: "draft-1" };
+      }),
+      updateDraft: vi.fn(async (_account: AccountRecord, id: string, update: Parameters<EmailProvider["updateDraft"]>[2]) => {
+        html = update.body ?? html;
+        return { id };
+      }),
+      removeAttachmentsFromDraft: vi.fn(async () => ({ id: "draft-1" })),
+      addAttachmentToDraft: vi.fn(async () => ({ id: "draft-1" })),
+      sendDraft: vi.fn(async () => {
+        sentBodies.push(html);
+        return { id: "sent-1" };
+      }),
+    };
+    return {
+      provider,
+      account: gmailAccount,
+      sentBodies,
+      html: () => html,
+      setHtml: (value: string) => { html = value; },
+      handler: (toolName: string) => registerHandler(provider as unknown as EmailProvider, toolName, undefined, gmailAccount),
+    };
+  }
+
+  function composeArgs(includeSignature = true) {
+    return sendEmailSchema.parse({
+      account: account.email,
+      to: [{ address: "recipient@example.com" }],
+      subject: "Subject",
+      body: "Message body",
+      include_signature: includeSignature,
+      inReplyTo: false,
+    });
+  }
+
+  describe.each(["send_email", "draft_email"])("%s", (toolName) => {
+    it.each([
+      { name: "prefers native over local", native, local, expected: native, excluded: local },
+      { name: "uses native without local", native, local: undefined, expected: native, excluded: local },
+      { name: "falls back on empty native", native: "", local, expected: local, excluded: native },
+      { name: "falls back on absent native", native: undefined, local, expected: local, excluded: native },
+    ])("$name", async (scenario) => {
+      const state = fixture();
+      state.account.signature = scenario.local;
+      state.provider.getSignature.mockResolvedValue(scenario.native);
+
+      const result = await state.handler(toolName)(composeArgs());
+      const html = toolName === "send_email" ? state.sentBodies[0]! : state.html();
+
+      expect(structured(result)).toMatchObject(toolName === "send_email" ? { sent: true } : { draft: true });
+      expect(html).toContain("<p>Message body</p>");
+      expect(html.split(scenario.expected)).toHaveLength(2);
+      expect(html).not.toContain(scenario.excluded);
+    });
+
+    it("omits both sources and skips native lookup when inclusion is false", async () => {
+      const state = fixture();
+      state.provider.getSignature.mockRejectedValue(new Error("Lookup must not run"));
+
+      const result = await state.handler(toolName)(composeArgs(false));
+      const html = toolName === "send_email" ? state.sentBodies[0]! : state.html();
+
+      expect(structured(result)).toMatchObject(toolName === "send_email" ? { sent: true } : { draft: true });
+      expect(html).toContain("<p>Message body</p>");
+      expect(html).not.toContain(native);
+      expect(html).not.toContain(local);
+      expect(state.provider.getSignature).not.toHaveBeenCalled();
+    });
+  });
+
+  describe.each(["send_email", "draft_email", "edit_draft"])("%s signature failures", (toolName) => {
+    it.each(["absent", "empty", "rejected"])("blocks every mutation when native lookup is %s", async (failure) => {
+      const state = fixture();
+      if (failure === "rejected") {
+        state.provider.getSignature.mockRejectedValue(new Error("Gmail settings unavailable"));
+      } else {
+        state.account.signature = undefined;
+        state.provider.getSignature.mockResolvedValue(failure === "empty" ? "" : undefined);
+      }
+      const args = toolName === "edit_draft"
+        ? editDraftSchema.parse({
+          account: account.email,
+          id: "draft-1",
+          old_text: "Old answer",
+          new_text: "New answer",
+          include_signature: true,
+          remove_attachments: ["att-1"],
+          new_attachments: [{ filePath: "/must-not-be-opened" }],
+        })
+        : composeArgs();
+
+      const result = await state.handler(toolName)(args);
+
+      expect(result).toMatchObject({ isError: true });
+      expect(errorText(result)).toBe(failure === "rejected" ? "Gmail settings unavailable" : missingGmailSignature);
+      expect(state.html()).toBe("<p>Old answer</p>");
+      expect(state.sentBodies).toEqual([]);
+      expect(state.provider.sendEmail).not.toHaveBeenCalled();
+      expect(state.provider.saveDraft).not.toHaveBeenCalled();
+      expect(state.provider.updateDraft).not.toHaveBeenCalled();
+      expect(state.provider.removeAttachmentsFromDraft).not.toHaveBeenCalled();
+      expect(state.provider.addAttachmentToDraft).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each([true, false])("preserves surrounding HTML/history in a block edit with inclusion=%s", async (includeSignature) => {
+    const state = fixture();
+    const before = '<p data-preserve="before">Unselected introduction</p>';
+    const after = '<div style="line-height:12px"><br></div><!--thread--><blockquote>Older thread</blockquote>';
+    state.setHtml(before + "<p>Old answer</p>" + after);
+    if (!includeSignature) state.provider.getSignature.mockRejectedValue(new Error("Lookup must not run"));
+
+    const result = await state.handler("edit_draft")(editDraftSchema.parse({
+      account: account.email,
+      id: "draft-1",
+      old_text: "Old answer",
+      new_text: "New **answer**",
+      include_signature: includeSignature,
+    }));
+
+    expect(structured(result)).toMatchObject({ edited: true });
+    expect(state.html().startsWith(before)).toBe(true);
+    expect(state.html().endsWith(after)).toBe(true);
+    const replacement = state.html().slice(before.length, -after.length);
+    expect(replacement).toContain("<p>New <strong>answer</strong></p>");
+    expect(replacement).not.toContain("Old answer");
+    expect(state.html()).not.toContain(local);
+    if (includeSignature) {
+      expect(replacement.split(native)).toHaveLength(2);
+    } else {
+      expect(state.html()).not.toContain(native);
+      expect(state.provider.getSignature).not.toHaveBeenCalled();
+    }
+    expect(structured(result)?.draftMarkdown).toContain("> Older thread");
+  });
+
+  it.each(["metadata", "attachment"])("does not resolve a signature for a %s-only edit", async (kind) => {
+    const state = fixture();
+    const originalHtml = "<p>Unchanged body</p>" + local + "<blockquote>Older thread</blockquote>";
+    state.setHtml(originalHtml);
+    state.provider.getSignature.mockRejectedValue(new Error("Lookup must not run"));
+
+    const result = await state.handler("edit_draft")(editDraftSchema.parse({
+      account: account.email,
+      id: "draft-1",
+      include_signature: true,
+      ...(kind === "metadata" ? { subject: "Updated subject" } : { remove_attachments: ["att-1"] }),
+    }));
+
+    expect(structured(result)).toMatchObject({ edited: true });
+    expect(structured(result)?.draftMarkdown).toContain("Unchanged body");
+    expect(structured(result)?.draftMarkdown).toContain("> Older thread");
+    expect(state.html()).toBe(originalHtml);
+    expect(state.provider.getSignature).not.toHaveBeenCalled();
+    if (kind === "metadata") {
+      expect(state.provider.updateDraft).toHaveBeenCalledWith(state.account, "draft-1", expect.objectContaining({ subject: "Updated subject", body: undefined }));
+    } else {
+      expect(state.provider.removeAttachmentsFromDraft).toHaveBeenCalledWith(state.account, "draft-1", ["att-1"]);
+      expect(state.provider.updateDraft).not.toHaveBeenCalled();
+    }
+  });
+
+  it("sends the stored draft without looking up or reappending a signature", async () => {
+    const state = fixture();
+    const storedHtml = "<p>Stored draft</p>" + local;
+    state.setHtml(storedHtml);
+    state.provider.getSignature.mockRejectedValue(new Error("Lookup must not run"));
+
+    const result = await state.handler("send_draft")({ account: account.email, id: "draft-1" });
+
+    expect(structured(result)).toMatchObject({ sent: true, id: "sent-1" });
+    expect(state.sentBodies).toEqual([storedHtml]);
+    expect(state.html()).toBe(storedHtml);
+    expect(state.provider.getSignature).not.toHaveBeenCalled();
+    expect(state.provider.updateDraft).not.toHaveBeenCalled();
+    expect(state.provider.saveDraft).not.toHaveBeenCalled();
+  });
+
+  it.each(["send_email", "draft_email", "edit_draft"])("keeps local-only provider behavior for %s", async (toolName) => {
+    const state = fixture();
+    const { getSignature: _unused, ...localProvider } = state.provider;
+    localProvider.id = "outlook";
+    const localAccount: AccountRecord = { ...account, signature: local };
+    const handler = registerHandler(localProvider as unknown as EmailProvider, toolName, undefined, localAccount);
+    const args = toolName === "edit_draft"
+      ? editDraftSchema.parse({ account: account.email, id: "draft-1", old_text: "Old answer", new_text: "New answer", include_signature: true })
+      : composeArgs();
+
+    const result = await handler(args);
+    const html = toolName === "send_email" ? state.sentBodies[0]! : state.html();
+    expect(structured(result)).toMatchObject(toolName === "send_email" ? { sent: true } : toolName === "draft_email" ? { draft: true } : { edited: true });
+    expect(html.split(local)).toHaveLength(2);
+    expect(html).not.toContain(native);
+
+    localAccount.signature = undefined;
+    localProvider.sendEmail.mockClear();
+    localProvider.saveDraft.mockClear();
+    localProvider.updateDraft.mockClear();
+    const missing = await handler(args);
+    expect(missing).toMatchObject({ isError: true });
+    expect(errorText(missing)).toBe("include_signature is true but no signature is configured for this account. Set up a signature first with set_account_settings.");
+    expect(localProvider.sendEmail).not.toHaveBeenCalled();
+    expect(localProvider.saveDraft).not.toHaveBeenCalled();
+    expect(localProvider.updateDraft).not.toHaveBeenCalled();
   });
 });

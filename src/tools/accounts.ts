@@ -16,6 +16,7 @@ import {
   publicAccountResult,
   styleOutputSchema,
   shouldRegister,
+  resolveAccountSignature,
 } from "./shared.js";
 
 export function registerAccountTools(
@@ -40,7 +41,8 @@ export function registerAccountTools(
       {
         description:
           "List all email accounts known to this server (no secrets). " +
-          "Use the returned `email` value as the `account` argument to other tools.",
+          "Use the returned `email` value as the `account` argument to other tools. " +
+          "`hasSignature` reports only a locally stored custom signature; use get_account_settings for the effective signature.",
         inputSchema: z.object({}),
         outputSchema: listAccountsOutputSchema,
       },
@@ -203,7 +205,8 @@ export function registerAccountTools(
       "get_account_settings",
       {
         description:
-          "Get signature (HTML) and style preferences for an account.",
+          "Get the effective HTML signature and local style preferences. Gmail's signature takes precedence, " +
+          "with local fallback only when Gmail returns none; lookup failures return an error.",
         inputSchema: z.object({ account: z.string().email() }),
         outputSchema: accountSettingsOutputSchema,
       },
@@ -212,8 +215,9 @@ export function registerAccountTools(
           const acct = store.getAccount(args.account);
           if (!acct)
             return fail(`no account registered for "${args.account}"`);
+          const provider = registry.get(acct.provider);
           const data = {
-            signature: acct.signature ?? null,
+            signature: (await resolveAccountSignature(provider, acct)) ?? null,
             style: acct.style ?? null,
           };
           return ok(data, data as Record<string, unknown>);
@@ -229,7 +233,10 @@ export function registerAccountTools(
       "set_account_settings",
       {
         description:
-          "Set signature (HTML snippet) and/or style preferences for an account. " +
+          "Set local signature (HTML snippet) and/or style preferences for an account. " +
+          "For Gmail, the local signature is fallback only when Gmail returns none. " +
+          "Returns the saved local signature, not Gmail's signature. Clearing local does not clear Gmail; " +
+          "use `include_signature: false` to omit either source. " +
           "Use `signaturePath` to load a signature from a file (useful for signatures with base64 images). " +
           "`signature` and `signaturePath` are mutually exclusive.",
         inputSchema: z
