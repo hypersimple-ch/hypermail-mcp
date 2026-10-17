@@ -521,7 +521,7 @@ src/
 
 ## Release notes
 
-### Unreleased — Gmail-native signatures
+### v0.7.32 — Gmail-native signatures
 
 - Explicit signature inclusion and settings inspection prefer Gmail's native HTML
   signature, with local fallback only after a successful empty lookup. Lookup
