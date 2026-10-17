@@ -2,6 +2,7 @@ node_modules/
 dist/
 .mcp.json
 .pi/mcp.json
+.omp/mcp.json
 *.log
 .env
 .env.*
